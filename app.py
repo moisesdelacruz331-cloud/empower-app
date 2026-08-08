@@ -228,7 +228,7 @@ st.markdown(
 )
 
 
-# --- DATABASE CONNECTIONS ---
+# --- DATABASE CONNECTIONS & ROSTER ISOLATION ---
 @st.cache_resource
 def connect_to_gsheet():
     creds = dict(st.secrets["connections"]["gsheets"])
@@ -255,31 +255,39 @@ def load_student_pins():
         return {}
 
 
-@st.cache_data(ttl=30)
-def load_section_roster(section_name: str) -> dict:
-    """Reads section rosters from 'Class Rosters' tab.
-
-    Maps plain student names to salted anonymous tokens (STU-XXXX) in memory.
-    """
+@st.cache_data(ttl=300)
+def fetch_master_roster_df():
+    """Fetches the entire 'Class Rosters' tab once every 5 minutes to avoid API limits."""
     try:
         sh = connect_to_gsheet()
         ws = sh.worksheet("Class Rosters")
-        df = pd.DataFrame(ws.get_all_records())
-
-        section_df = df[
-            df["Class/Section"].astype(str).str.strip() == section_name
-        ]
-
-        roster_map = {}
-        for _, row in section_df.iterrows():
-            name = str(row.get("Student Name", "")).strip()
-            lrn = str(row.get("LRN", "")).strip()
-            if name and lrn:
-                token = generate_anonymous_id(lrn)
-                roster_map[name] = token
-        return roster_map
+        return pd.DataFrame(ws.get_all_records())
     except Exception:
+        return pd.DataFrame()
+
+
+def get_isolated_section_roster(assigned_section: str) -> dict:
+    """Strictly filters the master roster down to ONLY the active assigned section.
+
+    Maps plain student names to salted STU-XXXX tokens dynamically in memory.
+    """
+    df = fetch_master_roster_df()
+    if df.empty:
         return {}
+
+    # Strict section query isolation
+    section_df = df[
+        df["Class/Section"].astype(str).str.strip() == str(assigned_section).strip()
+    ]
+
+    roster_map = {}
+    for _, row in section_df.iterrows():
+        name = str(row.get("Student Name", "")).strip()
+        lrn = str(row.get("LRN", "")).strip()
+        if name and lrn:
+            roster_map[name] = generate_anonymous_id(lrn)
+
+    return roster_map
 
 
 try:
@@ -317,7 +325,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- STEP 1: CLASS PIN VERIFICATION ---
+# --- STEP 1: CLASS PIN VERIFICATION & SECTION AUTHORIZATION ---
 student_pins = load_student_pins()
 input_pin = st.text_input(
     "🔑 Enter your 4-digit Class PIN to begin:",
@@ -329,8 +337,8 @@ if input_pin in student_pins:
     assigned_section = student_pins[input_pin]
     st.success(f"Welcome! Connected to **Section {assigned_section}**")
 
-    # Load Dynamic Section Roster to auto-generate Dropdowns
-    roster_map = load_section_roster(assigned_section)
+    # Load Strictly Isolated Section Roster
+    roster_map = get_isolated_section_roster(assigned_section)
     has_roster = len(roster_map) > 0
 
     if has_roster:
@@ -381,7 +389,8 @@ if input_pin in student_pins:
                     select_options_optional,
                 )
             else:
-                # Fallback if Class Rosters tab is not configured
+                # Fallback if Class Rosters tab is not configured for this section
+                st.info("💡 Note: Class roster dropdown is unavailable for this section. Using manual input mode.")
                 lrn_input = st.text_input(
                     "Learner Reference Number (LRN)",
                     placeholder="e.g., 123456789012",
