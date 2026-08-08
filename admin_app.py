@@ -54,7 +54,6 @@ st.markdown(
 # --- SOCIOMETRIC GRAPH ANALYSIS MODULE ---
 def render_sociogram_analytics(df_pulse, section_label="Active View"):
     """Generates an interactive Plotly sociogram network graph from peer nominations
-
     for a specific section, identifies structurally isolated nodes, and provides interpretations.
     """
     if df_pulse.empty:
@@ -146,8 +145,8 @@ def render_sociogram_analytics(df_pulse, section_label="Active View"):
         node_labels.append(str(node))
         node_hover.append(
             f"<b>Student Identifier:</b> {node}<br>"
-            f"<b>Nominations Received ($deg^- $):</b> {deg}<br>"
-            f"<b>In-Degree Centrality ($C_d$):</b> {c_d:.3f}"
+            f"<b>Nominations Received (in-degree):</b> {deg}<br>"
+            f"<b>In-Degree Centrality (C_d):</b> {c_d:.3f}"
         )
 
     node_trace = go.Scatter(
@@ -236,7 +235,6 @@ def render_sociogram_analytics(df_pulse, section_label="Active View"):
 # --- COUNSELOR DE-ANONYMIZATION MODULE ---
 def render_student_lookup_tool():
     """Provides authorized guidance personnel with two-way token resolution
-
     to identify flagged high-risk or isolated students.
     """
     st.subheader("🔍 Confidential Student De-Anonymization Tool")
@@ -652,7 +650,7 @@ else:
         st.subheader("🫂 Peer Inclusion & Sociometric Analytics")
         st.caption(
             "Interactive network graph identifying peer centrality and"
-            " structurally isolated students ($deg^- = 0$)."
+            " structurally isolated students."
         )
 
         # DEDICATED COUNSELOR PER-SECTION SOCIOGRAM SELECTOR
