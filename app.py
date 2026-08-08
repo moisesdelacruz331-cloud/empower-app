@@ -39,6 +39,16 @@ hide_streamlit_ui = """
     [data-testid="stDecoration"] {
         display: none !important;
     }
+
+    /* Hide bottom-right Streamlit Cloud floating badges & icons */
+    [data-testid="stStatusWidget"],
+    [data-testid="stViewerBadge"],
+    .viewerBadge_container__13533,
+    .stAppActionButtons,
+    a[href*="streamlit.io"] {
+        display: none !important;
+        visibility: hidden !important;
+    }
     </style>
 """
 st.markdown(hide_streamlit_ui, unsafe_allow_html=True)
