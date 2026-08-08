@@ -1,17 +1,10 @@
 import streamlit as st
+import pandas as pd
 import gspread
 from datetime import datetime
 
 st.set_page_config(page_title="EMPOWER | Student Space", page_icon="🌱", layout="centered")
 
-# --- CLASS PIN CONFIGURATION ---
-CLASS_PINS = {
-    "1001": "10 - Emerald",
-    "1002": "10 - Ruby",
-    "1003": "10 - Sapphire"
-}
-
-# --- DATABASE CONNECTION ---
 @st.cache_resource
 def connect_to_gsheet():
     creds = dict(st.secrets["connections"]["gsheets"])
@@ -20,28 +13,47 @@ def connect_to_gsheet():
     gc = gspread.service_account_from_dict(creds)
     return gc.open_by_url(creds.get("spreadsheet"))
 
+@st.cache_data(ttl=10)
+def load_student_pins():
+    try:
+        sh = connect_to_gsheet()
+        ws = sh.worksheet("Class Configuration")
+        df = pd.DataFrame(ws.get_all_records())
+        # Convert to dictionary {Student_PIN: Section_Name}
+        pin_map = {}
+        for _, row in df.iterrows():
+            s_pin = str(row["Student PIN"]).strip()
+            sec = str(row["Class/Section"]).strip()
+            if s_pin and sec:
+                pin_map[s_pin] = sec
+        return pin_map
+    except Exception:
+        return {}
+
 try:
     sh = connect_to_gsheet()
 except Exception:
-    st.warning("App running in demo mode.")
+    st.warning("Running in offline mode.")
 
 st.title("🌱 EMPOWER Student Space")
 
-# --- CLASS ACCESS CONTROL ---
+# --- PIN VERIFICATION ---
 st.markdown("### 🔑 Step 1: Verify Your Class")
-input_pin = st.text_input("Enter your 4-digit Class PIN:", type="password", help="Ask your adviser for your section's PIN.")
+student_pins = load_student_pins()
 
-if input_pin.strip() in CLASS_PINS:
-    assigned_section = CLASS_PINS[input_pin.strip()]
+input_pin = st.text_input("Enter your Class PIN:", type="password", help="Ask your teacher or counselor for your PIN.").strip()
+
+if input_pin in student_pins:
+    assigned_section = student_pins[input_pin]
     st.success(f"Verified: **Section {assigned_section}**")
-    
     st.markdown("---")
+
     tab1, tab2 = st.tabs(["💬 Weekly Reflection", "💌 Send Kindness Badge"])
 
-    # TAB 1: PULSE CHECK-IN
+    # TAB 1: REFLECTION
     with tab1:
         with st.form("pulse_form", clear_on_submit=True):
-            lrn = st.text_input("Learner Reference Number (LRN)", placeholder="123456789012")
+            lrn = st.text_input("Learner Reference Number (LRN)")
             kind_peer = st.text_input("✨ Who showed kindness to you this week?")
             groupmate = st.text_input("🤝 Who would you like to sit/work with next week?")
             isolated_peer = st.text_input("🫂 Who in class seems quiet or left out lately?")
@@ -53,7 +65,7 @@ if input_pin.strip() in CLASS_PINS:
                 if lrn.strip():
                     try:
                         ws = sh.worksheet("Pulse Checkins")
-                        row_data = [
+                        ws.append_row([
                             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                             assigned_section,
                             lrn.strip(),
@@ -61,20 +73,19 @@ if input_pin.strip() in CLASS_PINS:
                             groupmate,
                             isolated_peer,
                             counselor_request
-                        ]
-                        ws.append_row(row_data)
-                        st.success("💚 Response saved successfully!")
+                        ])
+                        st.success("💚 Response submitted confidentially!")
                     except Exception as e:
-                        st.error(f"Error saving entry: {e}")
+                        st.error(f"Error submitting entry: {e}")
                 else:
                     st.error("Please enter your LRN.")
 
     # TAB 2: KINDNESS BADGES
     with tab2:
         with st.form("badge_form", clear_on_submit=True):
-            recipient = st.text_input("Recipient Student Name")
+            recipient = st.text_input("Recipient Name")
             badge_type = st.selectbox("Badge Type", ["Quiet Hero", "Good Listener", "Team Player", "Sunshine Friend"])
-            note = st.text_area("Appreciation Note (Optional)")
+            note = st.text_area("Short Note (Optional)")
             
             badge_submitted = st.form_submit_button("Send Kindness Badge ✨")
 
@@ -82,20 +93,19 @@ if input_pin.strip() in CLASS_PINS:
                 if recipient.strip():
                     try:
                         ws = sh.worksheet("Kindness Badges")
-                        row_data = [
+                        ws.append_row([
                             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                             assigned_section,
                             recipient.strip(),
                             badge_type,
                             note
-                        ]
-                        ws.append_row(row_data)
+                        ])
                         st.balloons()
-                        st.success(f"Badge sent to {recipient}!")
+                        st.success(f"Kindness badge sent to {recipient}!")
                     except Exception as e:
                         st.error(f"Error sending badge: {e}")
                 else:
                     st.error("Please enter the recipient's name.")
 
 elif input_pin:
-    st.error("Invalid Class PIN. Please check with your teacher.")
+    st.error("Invalid Class PIN. Please double-check with your adviser.")
