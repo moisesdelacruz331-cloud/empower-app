@@ -2,6 +2,7 @@ from datetime import datetime
 import hashlib
 import gspread
 import networkx as nx
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -12,13 +13,11 @@ st.set_page_config(
     page_title="EMPOWER Teacher & Counselor Portal", page_icon="📊", layout="wide"
 )
 
-# Salt Key for Anonymization Alignment
 SALT_KEY = st.secrets.get("SALT_KEY", "EMPOWER_2026_SECURE_SALT")
 
 
 # --- ANONYMIZATION UTILITIES ---
 def generate_anonymous_id(raw_id: str, salt: str = SALT_KEY) -> str:
-    """Generates the same salted SHA-256 token used in student check-ins."""
     if not raw_id or str(raw_id).strip() == "":
         return ""
     clean_id = str(raw_id).strip()
@@ -27,7 +26,7 @@ def generate_anonymous_id(raw_id: str, salt: str = SALT_KEY) -> str:
     return f"STU-{hash_digest[:4].upper()}"
 
 
-# Custom Styling
+# Styling
 st.markdown(
     """
     <style>
@@ -51,35 +50,74 @@ st.markdown(
 )
 
 
-# --- SOCIOMETRIC GRAPH ANALYSIS MODULE ---
-def render_sociogram_analytics(df_pulse, section_label="Active View"):
-    """Generates an interactive Plotly sociogram network graph from peer nominations
-    for a specific section, identifies structurally isolated nodes, and provides interpretations.
-    """
+# --- 3. ANTI-PRANK & ANOMALY FILTERING PIPELINE ---
+def clean_pulse_data(df_pulse: pd.DataFrame) -> pd.DataFrame:
+    """Pre-cleaning pipeline to filter out trolling, duplicate submissions, and self-nominations."""
     if df_pulse.empty:
-        st.info(f"No check-in data available to build network graph for {section_label}.")
+        return df_pulse
+
+    df_clean = df_pulse.copy()
+
+    # Ensure Timestamp ordering and keep only latest submission per student
+    if "Timestamp" in df_clean.columns and "Student LRN" in df_clean.columns:
+        df_clean["Timestamp"] = pd.to_datetime(
+            df_clean["Timestamp"], errors="coerce"
+        )
+        df_clean = (
+            df_clean.sort_values("Timestamp")
+            .groupby("Student LRN")
+            .last()
+            .reset_index()
+        )
+
+    # Sanitize self-nominations
+    if "Kind Peer" in df_clean.columns:
+        df_clean["Kind Peer"] = df_clean.apply(
+            lambda r: (
+                ""
+                if str(r["Student LRN"]).strip()
+                == str(r["Kind Peer"]).strip()
+                else r["Kind Peer"]
+            ),
+            axis=1,
+        )
+
+    if "Preferred Groupmate" in df_clean.columns:
+        df_clean["Preferred Groupmate"] = df_clean.apply(
+            lambda r: (
+                ""
+                if str(r["Student LRN"]).strip()
+                == str(r["Preferred Groupmate"]).strip()
+                else r["Preferred Groupmate"]
+            ),
+            axis=1,
+        )
+
+    return df_clean
+
+
+# --- 1 & 2. SOCIOGRAM ANALYTICS (DUAL-FILTER ANCHORS & ABSENTEEISM MASKING) ---
+def render_sociogram_analytics(
+    df_pulse, df_badges, section_roster=None, section_label="Active View"
+):
+    """Calculates network graph, masks absent students, and applies dual-filter peer anchor logic."""
+    df_clean = clean_pulse_data(df_pulse)
+
+    if df_clean.empty:
+        st.info(f"No valid check-in data available for {section_label}.")
         return []
 
-    # Initialize Directed Network Graph
     G = nx.DiGraph()
 
-    # Populate Nodes and Edges from Peer Nominations
-    for _, row in df_pulse.iterrows():
+    for _, row in df_clean.iterrows():
         sender = str(row.get("Student LRN", "")).strip()
         kind_peer = str(row.get("Kind Peer", "")).strip()
         preferred_peer = str(row.get("Preferred Groupmate", "")).strip()
 
         if sender and sender.lower() != "nan":
             G.add_node(sender)
-
-            # Directed Edge: Sender -> Nominated Peer
-            if (
-                kind_peer
-                and kind_peer.lower() != "nan"
-                and sender != kind_peer
-            ):
+            if kind_peer and kind_peer.lower() != "nan" and sender != kind_peer:
                 G.add_edge(sender, kind_peer, relation="Kindness")
-
             if (
                 preferred_peer
                 and preferred_peer.lower() != "nan"
@@ -88,24 +126,59 @@ def render_sociogram_analytics(df_pulse, section_label="Active View"):
                 G.add_edge(sender, preferred_peer, relation="Preferred Partner")
 
     if G.number_of_nodes() == 0:
-        st.info(f"Insufficient peer nomination records to render sociogram for {section_label}.")
+        st.info(f"Insufficient network data for {section_label}.")
         return []
 
-    # Calculate Network Centrality Metrics
     in_degree = dict(G.in_degree())
     n_nodes = G.number_of_nodes()
-
-    # Degree Centrality
     centrality = (
         {node: deg / (n_nodes - 1) for node, deg in in_degree.items()}
         if n_nodes > 1
         else {node: 0.0 for node in G.nodes()}
     )
 
-    # Generate 2D Node Positions using Fruchterman-Reingold Force-Directed Layout
-    pos = nx.spring_layout(G, k=0.6, seed=42)
+    # 2. ACTIVE ABSENTEEISM DATA MASKING
+    present_students = set(df_clean["Student LRN"].astype(str).str.strip().unique())
+    if section_roster and len(section_roster) > 0:
+        full_roster = set([str(x).strip() for x in section_roster])
+        absent_students = full_roster - present_students
+    else:
+        absent_students = set()
 
-    # Edge Traces (Lines)
+    # Filter isolated nodes: degree 0 AND not marked absent
+    isolated_nodes = [
+        node
+        for node, deg in in_degree.items()
+        if deg == 0 and node not in absent_students
+    ]
+
+    # 1. DUAL-FILTER PEER ANCHOR LOGIC
+    badge_counts = {}
+    if not df_badges.empty and "Recipient LRN" in df_badges.columns:
+        badge_counts = (
+            df_badges["Recipient LRN"]
+            .astype(str)
+            .str.strip()
+            .value_counts()
+            .to_dict()
+        )
+
+    badge_median = (
+        np.median(list(badge_counts.values())) if badge_counts else 0
+    )
+    centrality_threshold = (
+        np.median(list(centrality.values())) if centrality else 0
+    )
+
+    eligible_anchors = []
+    for node, deg in in_degree.items():
+        earned_badges = badge_counts.get(node, 0)
+        c_val = centrality.get(node, 0)
+        if c_val >= centrality_threshold and earned_badges >= badge_median and deg > 0:
+            eligible_anchors.append(node)
+
+    # Plot Layout
+    pos = nx.spring_layout(G, k=0.6, seed=42)
     edge_x, edge_y = [], []
     for edge in G.edges():
         x0, y0 = pos[edge[0]]
@@ -114,211 +187,92 @@ def render_sociogram_analytics(df_pulse, section_label="Active View"):
         edge_y.extend([y0, y1, None])
 
     edge_trace = go.Scatter(
-        x=edge_x,
-        y=edge_y,
-        line=dict(width=1.2, color="#CBD5E1"),
-        hoverinfo="none",
-        mode="lines",
+        x=edge_x, y=edge_y, line=dict(width=1.2, color="#CBD5E1"), hoverinfo="none", mode="lines"
     )
 
-    # Node Traces (Markers)
-    node_x, node_y = [], []
-    node_colors, node_sizes = [], []
-    node_labels, node_hover = [], []
-
+    node_x, node_y, node_colors, node_sizes, node_labels, node_hover = [], [], [], [], [], []
     for node in G.nodes():
         x, y = pos[node]
         node_x.append(x)
         node_y.append(y)
-
         deg = in_degree[node]
-        c_d = centrality[node]
 
-        # Red for isolated nodes; Green for connected nodes
-        if deg == 0:
+        if node in isolated_nodes:
             node_colors.append("#EF4444")
             node_sizes.append(22)
+        elif node in eligible_anchors:
+            node_colors.append("#3B82F6")  # Blue for Dual-Filter Peer Anchors
+            node_sizes.append(24)
         else:
             node_colors.append("#10B981")
-            node_sizes.append(18 + (deg * 6))
+            node_sizes.append(16 + (deg * 5))
 
         node_labels.append(str(node))
         node_hover.append(
-            f"<b>Student Identifier:</b> {node}<br>"
-            f"<b>Nominations Received (in-degree):</b> {deg}<br>"
-            f"<b>In-Degree Centrality (C_d):</b> {c_d:.3f}"
+            f"<b>Student ID:</b> {node}<br>"
+            f"<b>Nominations Received:</b> {deg}<br>"
+            f"<b>Badges Earned:</b> {badge_counts.get(node, 0)}<br>"
+            f"<b>Status:</b> {'Dual-Filter Peer Anchor' if node in eligible_anchors else 'Isolated' if node in isolated_nodes else 'Standard'}"
         )
 
     node_trace = go.Scatter(
-        x=node_x,
-        y=node_y,
-        mode="markers+text",
-        hoverinfo="text",
-        text=node_labels,
-        textposition="top center",
-        hovertext=node_hover,
-        marker=dict(
-            color=node_colors,
-            size=node_sizes,
-            line=dict(width=2, color="#FFFFFF"),
-        ),
+        x=node_x, y=node_y, mode="markers+text", hoverinfo="text",
+        text=node_labels, textposition="top center", hovertext=node_hover,
+        marker=dict(color=node_colors, size=node_sizes, line=dict(width=2, color="#FFFFFF"))
     )
 
-    # Render Plotly Figure
     fig = go.Figure(data=[edge_trace, node_trace])
     fig.update_layout(
-        title=dict(
-            text=f"<b>Classroom Sociogram Network — Section: {section_label}</b>",
-            font=dict(size=16),
-        ),
-        showlegend=False,
-        hovermode="closest",
-        margin=dict(b=20, l=10, r=10, t=50),
+        title=f"<b>Sociogram Network — Section: {section_label}</b>",
+        showlegend=False, margin=dict(b=20, l=10, r=10, t=50),
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)"
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # Visual Legend & Quick Metrics
-    st.markdown("##### 🔑 Visual Key & Quick Indicators")
-    col_k1, col_k2, col_k3 = st.columns(3)
-    col_k1.markdown("🔴 **Red Node:** 0 nominations (At-risk / Isolated)")
-    col_k2.markdown(
-        "🟢 **Green Node:** Connected (Larger = Higher popularity)"
-    )
-    col_k3.markdown("🔗 **Gray Line:** Incoming peer nomination")
-
-    # Extract Key Analytical Insights
-    isolated_nodes = [node for node, deg in in_degree.items() if deg == 0]
-    max_deg = max(in_degree.values()) if in_degree else 0
-    top_peers = [
-        node for node, deg in in_degree.items() if deg == max_deg and deg > 0
-    ]
-    inclusion_rate = (
-        ((n_nodes - len(isolated_nodes)) / n_nodes * 100) if n_nodes > 0 else 0
-    )
+    # Key Display
+    col_k1, col_k2, col_k3, col_k4 = st.columns(4)
+    col_k1.markdown("🔴 **Red:** Isolated (Present, 0 Nominations)")
+    col_k2.markdown("🔵 **Blue:** Qualified Peer Anchor (Centrality + Badges)")
+    col_k3.markdown("🟢 **Green:** Connected Peer")
+    col_k4.markdown(f"⚪ **Masked Absentees:** {len(absent_students)}")
 
     st.markdown("---")
-
-    # REAL-TIME INTERPRETATION BREAKDOWN
-    st.subheader(f"💡 Real-Time Sociogram Interpretation ({section_label})")
+    st.subheader(f"💡 Real-Time Sociogram Analysis ({section_label})")
 
     col_m1, col_m2, col_m3 = st.columns(3)
-    col_m1.metric("Section Inclusion Rate", f"{inclusion_rate:.1f}%")
-    col_m2.metric(
-        "Top Connected Peer Anchor(s)",
-        f"{', '.join(top_peers) if top_peers else 'None'}",
-        f"{max_deg} nominations received",
-    )
-    col_m3.metric("Isolated Students", f"{len(isolated_nodes)} of {n_nodes}")
-
-    with st.expander(
-        f"📖 **Guidance & Pedagogical Action Plan ({section_label})**", expanded=True
-    ):
-        st.markdown(f"""
-        * **Social Climate Summary:** **{inclusion_rate:.1f}%** of students in **{section_label}** were nominated by at least one peer as a preferred groupmate or kind classmate.
-        * **Peer Anchors (Bridge Builders):** Student(s) **{', '.join(top_peers) if top_peers else 'None'}** hold the highest centrality. They are trusted by peers and can serve as positive group leaders.
-        * **Isolated Nodes:** Student(s) **{', '.join(isolated_nodes) if isolated_nodes else 'None'}** received zero nominations, putting them at structural risk for social isolation or low participation.
-
-        **Recommended Classroom Actions:**
-        1. **Avoid Unstructured Grouping:** Avoid asking students to "pick your own partners," as this deepens isolation for red-node students.
-        2. **Strategic Pairing:** Quietly group isolated students with central peer anchors (**{', '.join(top_peers[:2]) if top_peers else 'leaders'}**) during upcoming group activities to build inclusive social ties.
-        3. **Observation Check:** Check in privately with red-node students to evaluate their emotional comfort and integration in class.
-        """)
+    col_m1.metric("Section Inclusion Rate", f"{((n_nodes - len(isolated_nodes)) / n_nodes * 100):.1f}%")
+    col_m2.metric("Dual-Filter Peer Anchors", f"{len(eligible_anchors)} identified", f"{', '.join(eligible_anchors[:2]) if eligible_anchors else 'None'}")
+    col_m3.metric("Verified Isolated Students", f"{len(isolated_nodes)}")
 
     return isolated_nodes
 
 
-# --- COUNSELOR DE-ANONYMIZATION MODULE ---
-def render_student_lookup_tool():
-    """Provides authorized guidance personnel with two-way token resolution
-    to identify flagged high-risk or isolated students.
-    """
-    st.subheader("🔍 Confidential Student De-Anonymization Tool")
-    st.caption(
-        "Authorized Guidance Counselor Feature — Compliant with Data Privacy"
-        " Act of 2012 (RA 10173)"
-    )
+# --- 4. IMPLEMENTATION FIDELITY RATE (IFR) TRACKER TOOL ---
+def render_ifr_tracker():
+    """Renders the Implementation Fidelity Rate tracker to monitor teacher intervention adherence."""
+    st.subheader("📐 Implementation Fidelity Rate ($IFR$) Tracker")
+    st.caption("Track pedagogical adherence to peer-shielding and deliberate grouping strategies.")
 
     col1, col2 = st.columns(2)
-
     with col1:
-        target_token = (
-            st.text_input(
-                "Enter Flagged Anonymous Token (e.g., STU-8A2F):",
-                placeholder="STU-8A2F",
-            )
-            .strip()
-            .upper()
-        )
+        total_assigned = st.number_input("Total Assigned Group Activities", min_value=1, value=10, step=1)
+        correctly_paired = st.number_input("Correctly Paired/Shielded Activities", min_value=0, max_value=int(total_assigned), value=8, step=1)
 
-    with col2:
-        input_lrn = st.text_input(
-            "Verify Known Student LRN:", placeholder="e.g., 123456789012"
-        ).strip()
+    ifr_value = (correctly_paired / total_assigned) * 100
 
-    if input_lrn:
-        generated_token = generate_anonymous_id(input_lrn)
-        if target_token and generated_token == target_token:
-            st.success(
-                f"✅ **MATCH CONFIRMED:** LRN `{input_lrn}` maps directly to"
-                f" **{generated_token}**."
-            )
-        else:
-            st.info(f"LRN `{input_lrn}` generates token: **{generated_token}**")
+    st.markdown("### $IFR$ Benchmark Result")
+    if ifr_value >= 85:
+        st.success(f"🟢 **IFR = {ifr_value:.1f}%** — Target Met (≥ 85%). High pairing fidelity.")
+    else:
+        st.error(f"🔴 **IFR = {ifr_value:.1f}%** — Below Target (< 85%). Pairing protocols require adjustment.")
 
-    st.markdown("---")
-    st.markdown("##### 📋 Batch Roster Resolver")
-    st.caption(
-        "Upload an official section roster (CSV containing 'LRN' and 'Student"
-        " Name') to match anonymous flags locally."
-    )
-
-    uploaded_file = st.file_uploader(
-        "Upload Class Roster CSV",
-        type=["csv"],
-        help="Processed entirely in-memory; student details are never stored to cloud servers.",
-    )
-
-    if uploaded_file is not None:
-        try:
-            roster_df = pd.read_csv(uploaded_file)
-            if "LRN" in roster_df.columns:
-                roster_df["LRN"] = roster_df["LRN"].astype(str).str.strip()
-                roster_df["Anonymous Token"] = roster_df["LRN"].apply(
-                    generate_anonymous_id
-                )
-
-                if target_token:
-                    matched_student = roster_df[
-                        roster_df["Anonymous Token"] == target_token
-                    ]
-                    if not matched_student.empty:
-                        student_info = matched_student.iloc[0]
-                        st.error(
-                            f"🚨 **MATCH FOUND FOR {target_token}:**\n\n"
-                            f"* **Student Name:**"
-                            f" {student_info.get('Student Name', 'N/A')}\n"
-                            f"* **LRN:** {student_info.get('LRN')}"
-                        )
-                    else:
-                        st.warning(
-                            f"No student matching token **{target_token}**"
-                            " found in this uploaded roster."
-                        )
-
-                with st.expander("View Full Section Anonymization Mapping"):
-                    st.dataframe(roster_df, use_container_width=True)
-            else:
-                st.error("CSV file must contain an 'LRN' column.")
-        except Exception as e:
-            st.error(f"Error processing roster file: {e}")
+    st.latex(r"IFR = \left( \frac{\text{Correctly Paired Activities}}{\text{Total Assigned Activities}} \right) \times 100")
 
 
-# --- DATABASE CONNECTIONS ---
+# --- DATABASE & DATA LOADING ---
 @st.cache_resource
 def connect_to_gsheet():
     creds = dict(st.secrets["connections"]["gsheets"])
@@ -335,9 +289,7 @@ def load_pin_config():
         ws = sh.worksheet("Class Configuration")
         return pd.DataFrame(ws.get_all_records())
     except Exception:
-        return pd.DataFrame(
-            columns=["Class/Section", "Student PIN", "Teacher PIN"]
-        )
+        return pd.DataFrame(columns=["Class/Section", "Student PIN", "Teacher PIN"])
 
 
 def parse_mood_and_requests(df):
@@ -345,27 +297,16 @@ def parse_mood_and_requests(df):
         df["Mood"] = []
         df["Clean_Counselor_Request"] = []
         return df
-
     if "Counselor Request" in df.columns:
-        df["Mood"] = (
-            df["Counselor Request"]
-            .astype(str)
-            .str.extract(r"\[Mood:\s*([^\]]+)\]")
-        )
-        df["Mood"] = df["Mood"].fillna("🌱 Not Specified")
-        df["Clean_Counselor_Request"] = (
-            df["Counselor Request"]
-            .astype(str)
-            .str.replace(r"\[Mood:\s*([^\]]+)\]\s*", "", regex=True)
-        )
+        df["Mood"] = df["Counselor Request"].astype(str).str.extract(r"\[Mood:\s*([^\]]+)\]").fillna("🌱 Not Specified")
+        df["Clean_Counselor_Request"] = df["Counselor Request"].astype(str).str.replace(r"\[Mood:\s*([^\]]+)\]\s*", "", regex=True)
     else:
         df["Mood"] = "🌱 Not Specified"
         df["Clean_Counselor_Request"] = ""
-
     return df
 
 
-# --- AUTHENTICATION ---
+# --- AUTHENTICATION & APP LAYOUT ---
 if "auth_role" not in st.session_state:
     st.session_state.auth_role = None
     st.session_state.auth_section = None
@@ -375,15 +316,10 @@ if not st.session_state.auth_role:
     with col2:
         st.image("fatimanhslogo.png", width=80)
         st.title("🔒 EMPOWER Staff Portal")
-        login_pin = st.text_input(
-            "Enter Teacher PIN / Passcode:", type="password"
-        ).strip()
+        login_pin = st.text_input("Enter Teacher PIN / Passcode:", type="password").strip()
 
         if st.button("Login to Dashboard"):
-            counselor_pass = str(
-                st.secrets.get("ADMIN_PASSWORD", "COUNSELOR2026")
-            ).strip()
-
+            counselor_pass = str(st.secrets.get("ADMIN_PASSWORD", "COUNSELOR2026")).strip()
             if login_pin == counselor_pass:
                 st.session_state.auth_role = "Counselor"
                 st.session_state.auth_section = "ALL"
@@ -391,38 +327,26 @@ if not st.session_state.auth_role:
             else:
                 pin_df = load_pin_config()
                 if not pin_df.empty and "Teacher PIN" in pin_df.columns:
-                    matched = pin_df[
-                        pin_df["Teacher PIN"].astype(str).str.strip()
-                        == login_pin
-                    ]
+                    matched = pin_df[pin_df["Teacher PIN"].astype(str).str.strip() == login_pin]
                     if not matched.empty:
                         st.session_state.auth_role = "Teacher"
-                        st.session_state.auth_section = matched.iloc[0][
-                            "Class/Section"
-                        ]
+                        st.session_state.auth_section = matched.iloc[0]["Class/Section"]
                         st.rerun()
                     else:
-                        st.error("Invalid Passcode or Teacher PIN.")
+                        st.error("Invalid Passcode.")
                 else:
                     st.error("Invalid Passcode.")
-
 else:
-    # --- LOGGED IN DASHBOARD ---
     role = st.session_state.auth_role
     assigned_section = st.session_state.auth_section
 
     st.sidebar.image("fatimanhslogo.png", width=100)
     st.sidebar.title("📊 Staff Analytics")
-    st.sidebar.write(f"Role: **{role}**")
-
     sh = connect_to_gsheet()
 
-    # Load master datasets
     try:
         ws_pulse = sh.worksheet("Pulse Checkins")
-        df_pulse_raw = parse_mood_and_requests(
-            pd.DataFrame(ws_pulse.get_all_records())
-        )
+        df_pulse_raw = parse_mood_and_requests(pd.DataFrame(ws_pulse.get_all_records()))
     except Exception:
         df_pulse_raw = pd.DataFrame()
 
@@ -432,336 +356,63 @@ else:
     except Exception:
         df_badges_raw = pd.DataFrame()
 
+    # Apply global anti-prank cleaning
+    df_pulse_clean = clean_pulse_data(df_pulse_raw)
+
     pin_df = load_pin_config()
-
-    # SECTION SELECTION CONTROLS FOR COUNSELOR
     if role == "Counselor":
-        available_sections = []
-        if not df_pulse_raw.empty and "Class/Section" in df_pulse_raw.columns:
-            available_sections.extend(df_pulse_raw["Class/Section"].dropna().astype(str).unique().tolist())
-        if not pin_df.empty and "Class/Section" in pin_df.columns:
-            available_sections.extend(pin_df["Class/Section"].dropna().astype(str).unique().tolist())
-
-        sorted_sections = sorted(list(set([s.strip() for s in available_sections if s.strip()])))
-        counselor_section_options = ["ALL (All Sections Aggregated)"] + sorted_sections
-
-        st.sidebar.markdown("---")
-        selected_view_scope = st.sidebar.selectbox(
-            "🎯 Counselor View Scope:",
-            options=counselor_section_options,
-            help="Filter entire dashboard by section or view all combined data."
-        )
-
-        if selected_view_scope == "ALL (All Sections Aggregated)":
-            active_section_filter = "ALL"
-        else:
-            active_section_filter = selected_view_scope
+        available_sections = sorted(list(set(df_pulse_clean["Class/Section"].dropna().astype(str).unique()))) if not df_pulse_clean.empty else []
+        selected_view_scope = st.sidebar.selectbox("🎯 Counselor View Scope:", options=["ALL"] + available_sections)
+        active_section_filter = selected_view_scope
     else:
         active_section_filter = assigned_section
 
-    st.sidebar.write(f"Active Scope Filter: **{active_section_filter}**")
-
     if st.sidebar.button("Logout"):
         st.session_state.auth_role = None
-        st.session_state.auth_section = None
         st.cache_data.clear()
         st.rerun()
 
-    # FILTER DATASETS BASED ON ACTIVE SCOPE
-    df_pulse = df_pulse_raw.copy()
+    # Filtered View Data
+    df_pulse = df_pulse_clean.copy()
     df_badges = df_badges_raw.copy()
-
     if active_section_filter != "ALL":
         if not df_pulse.empty and "Class/Section" in df_pulse.columns:
             df_pulse = df_pulse[df_pulse["Class/Section"].astype(str).str.strip() == active_section_filter]
         if not df_badges.empty and "Class/Section" in df_badges.columns:
             df_badges = df_badges[df_badges["Class/Section"].astype(str).str.strip() == active_section_filter]
 
-    col_logo, col_title = st.columns([1, 6])
-    with col_logo:
-        st.image("fatimanhslogo.png", width=70)
-    with col_title:
-        st.title(f"Classroom Wellbeing Overview: {active_section_filter}")
-        st.caption(
-            "Real-time emotional climate, student check-ins, kindness badge"
-            " log, and support alerts."
-        )
+    st.title(f"Classroom Wellbeing Overview: {active_section_filter}")
 
-    # Top Metrics
-    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-
-    total_pulse = len(df_pulse) if not df_pulse.empty else 0
-    total_badges = len(df_badges) if not df_badges.empty else 0
-    overwhelmed_count = (
-        len(df_pulse[df_pulse["Mood"].str.contains("Overwhelmed", na=False)])
-        if not df_pulse.empty
-        else 0
-    )
-    counselor_req_count = (
-        len(df_pulse[df_pulse["Clean_Counselor_Request"].str.strip() != ""])
-        if not df_pulse.empty
-        else 0
-    )
-
-    col_m1.metric("💬 Pulse Check-Ins", total_pulse)
-    col_m2.metric("🏅 Badges Awarded", total_badges)
-    col_m3.metric("🌧️ Overwhelmed Students", overwhelmed_count)
-    col_m4.metric("🕊️ Counselor Requests", counselor_req_count)
-
-    st.markdown("---")
-
-    # Priority Alert Banner
-    if not df_pulse.empty:
-        high_risk = df_pulse[
-            (df_pulse["Mood"].str.contains("Overwhelmed", na=False))
-            | (df_pulse["Clean_Counselor_Request"].str.strip() != "")
-        ]
-
-        if not high_risk.empty:
-            st.markdown(
-                f"""
-                <div class="alert-high">
-                    <b>⚠️ Priority Support Needed ({active_section_filter}):</b> {len(high_risk)} student entry/entries indicate distress or requested a private chat.
-                </div>
-            """,
-                unsafe_allow_html=True,
-            )
-
-            with st.expander(
-                "🚨 View High-Priority Support Requests", expanded=False
-            ):
-                st.dataframe(
-                    high_risk[
-                        [
-                            "Timestamp",
-                            "Class/Section",
-                            "Student LRN",
-                            "Mood",
-                            "Clean_Counselor_Request",
-                        ]
-                    ],
-                    use_container_width=True,
-                )
-
-    # Dashboard Tabs
+    # Tabs Structure
+    tabs = ["📈 Mood Visualizations", "💬 Pulse Check-Ins", "🏅 Kindness Badges", "🫂 Peer Inclusion & Sociogram", "📐 IFR Tracker"]
     if role == "Counselor":
-        (
-            tab_mood,
-            tab_pulse,
-            tab_badges,
-            tab_peer,
-            tab_lookup,
-            tab_pin,
-        ) = st.tabs([
-            "📈 Mood Visualizations",
-            "💬 Pulse Check-Ins",
-            "🏅 Kindness Badges",
-            "🫂 Peer Inclusion & Sociogram",
-            "🔍 Student De-Anonymization",
-            "⚙️ PIN Manager",
-        ])
-    else:
-        tab_mood, tab_pulse, tab_badges, tab_peer = st.tabs([
-            "📈 Mood Visualizations",
-            "💬 Pulse Check-Ins",
-            "🏅 Kindness Badges",
-            "🫂 Peer Inclusion & Sociogram",
-        ])
+        tabs.extend(["🔍 Student De-Anonymization", "⚙️ PIN Manager"])
 
-    # TAB 1: MOOD VISUALIZATIONS
-    with tab_mood:
-        st.subheader(f"📈 Classroom Emotional Climate ({active_section_filter})")
+    tab_objects = st.tabs(tabs)
+
+    with tab_objects[0]:
+        st.subheader("📈 Emotional Climate")
         if not df_pulse.empty and "Mood" in df_pulse.columns:
-            col_chart1, col_chart2 = st.columns(2)
             mood_counts = df_pulse["Mood"].value_counts().reset_index()
             mood_counts.columns = ["Mood", "Count"]
+            fig_bar = px.bar(mood_counts, x="Mood", y="Count", color="Mood")
+            st.plotly_chart(fig_bar, use_container_width=True)
 
-            with col_chart1:
-                fig_bar = px.bar(
-                    mood_counts,
-                    x="Mood",
-                    y="Count",
-                    color="Mood",
-                    title=f"Student Mood Counts - {active_section_filter}",
-                    color_discrete_sequence=px.colors.qualitative.Pastel,
-                )
-                fig_bar.update_layout(showlegend=False)
-                st.plotly_chart(fig_bar, use_container_width=True)
+    with tab_objects[1]:
+        st.subheader("💬 Confidential Pulse Log")
+        st.dataframe(df_pulse, use_container_width=True)
 
-            with col_chart2:
-                fig_pie = px.pie(
-                    mood_counts,
-                    names="Mood",
-                    values="Count",
-                    hole=0.4,
-                    title=f"Mood Share Breakdown - {active_section_filter}",
-                    color_discrete_sequence=px.colors.qualitative.Set3,
-                )
-                st.plotly_chart(fig_pie, use_container_width=True)
-        else:
-            st.info("No student check-in data available yet for graphs.")
+    with tab_objects[2]:
+        st.subheader("🏅 Kindness Badges")
+        st.dataframe(df_badges, use_container_width=True)
 
-    # TAB 2: PULSE CHECK-INS LOG
-    with tab_pulse:
-        st.subheader(f"💬 Confidential Student Pulse Check-Ins ({active_section_filter})")
-        if not df_pulse.empty:
-            display_cols = [
-                "Timestamp",
-                "Class/Section",
-                "Student LRN",
-                "Mood",
-                "Kind Peer",
-                "Preferred Groupmate",
-                "Isolated Peer",
-                "Clean_Counselor_Request",
-            ]
-            available_cols = [c for c in display_cols if c in df_pulse.columns]
-
-            st.dataframe(df_pulse[available_cols], use_container_width=True)
-
-            csv_pulse = df_pulse.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "📥 Export Pulse Check-Ins (CSV)",
-                data=csv_pulse,
-                file_name=f"pulse_checkins_{active_section_filter}.csv",
-                mime="text/csv",
-            )
-        else:
-            st.info(f"No pulse check-in entries found for {active_section_filter} yet.")
-
-    # TAB 3: KINDNESS BADGES LOG
-    with tab_badges:
-        st.subheader(f"🏅 Peer Kindness Badges Log ({active_section_filter})")
-        if not df_badges.empty:
-            st.dataframe(df_badges, use_container_width=True)
-
-            csv_badges = df_badges.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "📥 Export Kindness Badges (CSV)",
-                data=csv_badges,
-                file_name=f"kindness_badges_{active_section_filter}.csv",
-                mime="text/csv",
-            )
-        else:
-            st.info(f"No kindness badges sent in {active_section_filter} yet.")
-
-    # TAB 4: PEER INCLUSION WATCHLIST & SOCIOGRAM NETWORK
-    with tab_peer:
+    with tab_objects[3]:
         st.subheader("🫂 Peer Inclusion & Sociometric Analytics")
-        st.caption(
-            "Interactive network graph identifying peer centrality and"
-            " structurally isolated students."
-        )
+        # Optional Roster Input for Absenteeism Masking
+        roster_input = st.text_area("Optional Section Roster LRNs (Comma-separated for absenteeism masking):", value="")
+        roster_list = [x.strip() for x in roster_input.split(",") if x.strip()] if roster_input else None
 
-        # DEDICATED COUNSELOR PER-SECTION SOCIOGRAM SELECTOR
-        if role == "Counselor":
-            if not df_pulse_raw.empty and "Class/Section" in df_pulse_raw.columns:
-                available_socio_sections = sorted(list(set(
-                    df_pulse_raw["Class/Section"].dropna().astype(str).unique().tolist()
-                )))
-            else:
-                available_socio_sections = []
+        render_sociogram_analytics(df_pulse, df_badges, section_roster=roster_list, section_label=active_section_filter)
 
-            if available_socio_sections:
-                if active_section_filter in available_socio_sections:
-                    default_idx = available_socio_sections.index(active_section_filter)
-                else:
-                    default_idx = 0
-
-                target_sociogram_section = st.selectbox(
-                    "📌 Select Section to Generate Sociogram Network:",
-                    options=available_socio_sections,
-                    index=default_idx,
-                    key="socio_section_picker",
-                    help="Sociograms are calculated on a per-section basis to preserve real classroom interaction boundaries."
-                )
-
-                df_sociogram = df_pulse_raw[
-                    df_pulse_raw["Class/Section"].astype(str).str.strip() == target_sociogram_section
-                ]
-            else:
-                target_sociogram_section = active_section_filter
-                df_sociogram = df_pulse
-        else:
-            target_sociogram_section = active_section_filter
-            df_sociogram = df_pulse
-
-        # Render Section-Specific Sociogram
-        isolated_students = render_sociogram_analytics(df_sociogram, section_label=target_sociogram_section)
-
-        if isolated_students:
-            st.markdown(
-                f"""
-                <div class="alert-watch">
-                    <b>🚨 Sociometric Isolation Alert ({target_sociogram_section}):</b> {len(isolated_students)} student(s) received 0 incoming peer nominations:<br>
-                    <b>Isolated Node Identifiers:</b> {', '.join(isolated_students)}
-                </div>
-            """,
-                unsafe_allow_html=True,
-            )
-
-        st.markdown("---")
-        st.subheader(f"📋 Peer-Nominated Isolation Reports ({target_sociogram_section})")
-
-        if not df_sociogram.empty and "Isolated Peer" in df_sociogram.columns:
-            isolated_df = df_sociogram[
-                df_sociogram["Isolated Peer"].astype(str).str.strip() != ""
-            ]
-
-            if not isolated_df.empty:
-                show_cols = [
-                    c
-                    for c in [
-                        "Timestamp",
-                        "Class/Section",
-                        "Isolated Peer",
-                        "Kind Peer",
-                        "Preferred Groupmate",
-                    ]
-                    if c in isolated_df.columns
-                ]
-                st.dataframe(isolated_df[show_cols], use_container_width=True)
-            else:
-                st.info(
-                    f"No manual peer isolation reports submitted in {target_sociogram_section}."
-                )
-        else:
-            st.info("No peer isolation data available.")
-
-    # COUNSELOR-ONLY TABS
-    if role == "Counselor":
-        # TAB 5: STUDENT DE-ANONYMIZATION LOOKUP
-        with tab_lookup:
-            render_student_lookup_tool()
-
-        # TAB 6: COUNSELOR PIN MANAGEMENT
-        with tab_pin:
-            st.subheader("⚙️ Manage Sections & Access PINs")
-            pin_df = load_pin_config()
-
-            with st.form("add_sec_form", clear_on_submit=True):
-                st.write("➕ **Add New Class Section**")
-                col_a, col_b, col_c = st.columns(3)
-                nsec = col_a.text_input(
-                    "Section Name", placeholder="10 - Emerald"
-                )
-                spin = col_b.text_input("Student PIN", placeholder="1001")
-                tpin = col_c.text_input(
-                    "Teacher PIN", placeholder="EMERALD2026"
-                )
-
-                if st.form_submit_button("Save Section & PINs"):
-                    if nsec.strip() and spin.strip() and tpin.strip():
-                        ws_c = sh.worksheet("Class Configuration")
-                        ws_c.append_row(
-                            [nsec.strip(), spin.strip(), tpin.strip()]
-                        )
-                        st.cache_data.clear()
-                        st.success(f"Added section {nsec} successfully!")
-                        st.rerun()
-                    else:
-                        st.error("Please fill in all fields.")
-
-            st.markdown("---")
-            st.write("📋 **Active Class PIN Configurations**")
-            st.dataframe(pin_df, use_container_width=True)
+    with tab_objects[4]:
+        render_ifr_tracker()
