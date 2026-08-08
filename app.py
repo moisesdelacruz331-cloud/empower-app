@@ -10,6 +10,39 @@ st.set_page_config(
     page_title="EMPOWER | Student Safe Haven", page_icon="🌱", layout="centered"
 )
 
+# --- HIDE STREAMLIT BRANDING & UI ELEMENTS ---
+hide_streamlit_ui = """
+    <style>
+    /* Hide top header bar and navigation links */
+    [data-testid="stHeader"] {
+        display: none !important;
+    }
+    
+    /* Hide bottom footer ("Made with Streamlit") */
+    footer {
+        visibility: hidden !important;
+        display: none !important;
+    }
+    
+    /* Hide top-right hamburger menu and deploy button */
+    #MainMenu {
+        visibility: hidden !important;
+    }
+    .stAppDeployButton {
+        display: none !important;
+    }
+    [data-testid="stToolbar"] {
+        display: none !important;
+    }
+    
+    /* Hide top accent decoration bar */
+    [data-testid="stDecoration"] {
+        display: none !important;
+    }
+    </style>
+"""
+st.markdown(hide_streamlit_ui, unsafe_allow_html=True)
+
 # --- SAFEGUARDING & PRIVACY UTILITIES ---
 SALT_KEY = st.secrets.get("SALT_KEY", "EMPOWER_2026_SECURE_SALT")
 PROFANITY_REGEX = r"(?i)\b(gago|tanga|bobo|tangina|penta|pUTA|ulol|fuck|shit|bitch|asshole|bastard)\b"
@@ -173,15 +206,13 @@ BADGE_DETAILS = {
     },
 }
 
-# --- CUSTOM CSS ---
+# --- CUSTOM APP STYLING ---
 st.markdown(
     """
     <style>
     .stApp {
         background: linear-gradient(180deg, #F4F8F7 0%, #EBF3F5 100%);
     }
-    header {visibility: hidden;}
-    footer {visibility: hidden;}
 
     .quote-box {
         background: #FFFFFF;
