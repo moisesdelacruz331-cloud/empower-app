@@ -40,12 +40,9 @@ def sanitize_input(text: str) -> str:
     if not text or not isinstance(text, str):
         return ""
 
-    # 1. Neutralize code injection and script tags
     sanitized = re.sub(
         MALICIOUS_INPUT_REGEX, "[BLOCKED_INPUT]", text, flags=re.IGNORECASE
     )
-
-    # 2. Mask profane or abusive terminology
     sanitized = re.sub(
         PROFANITY_REGEX, "*****", sanitized, flags=re.IGNORECASE
     )
@@ -114,11 +111,10 @@ DAILY_INSPIRATIONS = [
     },
 ]
 
-# Get today's quote based on day of the year
 day_of_year = datetime.now().timetuple().tm_yday
 today_quote = DAILY_INSPIRATIONS[day_of_year % len(DAILY_INSPIRATIONS)]
 
-# --- BADGES DICTIONARY WITH DESCRIPTIONS & ICONS ---
+# --- BADGES DICTIONARY ---
 BADGE_DETAILS = {
     "🌟 Quiet Hero": {
         "icon": "🌟",
@@ -177,7 +173,7 @@ BADGE_DETAILS = {
     },
 }
 
-# --- CUSTOM CSS FOR CALMING UI ---
+# --- CUSTOM CSS ---
 st.markdown(
     """
     <style>
@@ -232,7 +228,7 @@ st.markdown(
 )
 
 
-# --- DATABASE CONNECTION ---
+# --- DATABASE CONNECTIONS ---
 @st.cache_resource
 def connect_to_gsheet():
     creds = dict(st.secrets["connections"]["gsheets"])
@@ -255,6 +251,33 @@ def load_student_pins():
             if s_pin and sec:
                 pin_map[s_pin] = sec
         return pin_map
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=30)
+def load_section_roster(section_name: str) -> dict:
+    """Reads section rosters from 'Class Rosters' tab.
+
+    Maps plain student names to salted anonymous tokens (STU-XXXX) in memory.
+    """
+    try:
+        sh = connect_to_gsheet()
+        ws = sh.worksheet("Class Rosters")
+        df = pd.DataFrame(ws.get_all_records())
+
+        section_df = df[
+            df["Class/Section"].astype(str).str.strip() == section_name
+        ]
+
+        roster_map = {}
+        for _, row in section_df.iterrows():
+            name = str(row.get("Student Name", "")).strip()
+            lrn = str(row.get("LRN", "")).strip()
+            if name and lrn:
+                token = generate_anonymous_id(lrn)
+                roster_map[name] = token
+        return roster_map
     except Exception:
         return {}
 
@@ -306,7 +329,16 @@ if input_pin in student_pins:
     assigned_section = student_pins[input_pin]
     st.success(f"Welcome! Connected to **Section {assigned_section}**")
 
-    # Optional Interactive Mood Check
+    # Load Dynamic Section Roster to auto-generate Dropdowns
+    roster_map = load_section_roster(assigned_section)
+    has_roster = len(roster_map) > 0
+
+    if has_roster:
+        sorted_names = sorted(list(roster_map.keys()))
+        select_options_required = ["-- Select Your Name --"] + sorted_names
+        select_options_optional = ["-- None / Skip --"] + sorted_names
+
+    # Interactive Mood Check
     st.markdown("##### How are you feeling right now?")
     mood = st.select_slider(
         "Move the slider to share your current mood:",
@@ -327,31 +359,43 @@ if input_pin in student_pins:
     with tab1:
         st.markdown("##### Weekly Student Check-In")
         st.caption(
-            "Take your time. Share only what you feel comfortable sharing."
+            "Select classmate names easily from the dropdowns. Choices are automatically converted to anonymous tokens (STU-XXXX) before saving."
         )
 
         with st.form("pulse_form", clear_on_submit=True):
-            lrn = st.text_input(
-                "Learner Reference Number (LRN)",
-                placeholder="e.g., 123456789012",
-            )
-            kind_peer = st.text_input(
-                "✨ Peer Appreciation (LRN or Identifier)",
-                placeholder="Who showed kindness or helped you this week?",
-            )
-            groupmate = st.text_input(
-                "🤝 Preferred Groupmate (LRN or Identifier)",
-                placeholder=(
-                    "Who would you feel comfortable working/sitting with next"
-                    " week?"
-                ),
-            )
-            isolated_peer = st.text_input(
-                "🫂 Reaching Out (LRN or Identifier)",
-                placeholder=(
-                    "Who in class seems quiet, overwhelmed, or left out lately?"
-                ),
-            )
+            if has_roster:
+                sender_name = st.selectbox(
+                    "Your Name (Stored anonymously as STU-XXXX):",
+                    select_options_required,
+                )
+                kind_peer_name = st.selectbox(
+                    "✨ Peer Appreciation (Who showed kindness or helped you this week?):",
+                    select_options_optional,
+                )
+                groupmate_name = st.selectbox(
+                    "🤝 Preferred Groupmate (Who would you feel comfortable working/sitting with next week?):",
+                    select_options_optional,
+                )
+                isolated_peer_name = st.selectbox(
+                    "🫂 Reaching Out (Who in class seems quiet, overwhelmed, or left out lately?):",
+                    select_options_optional,
+                )
+            else:
+                # Fallback if Class Rosters tab is not configured
+                lrn_input = st.text_input(
+                    "Learner Reference Number (LRN)",
+                    placeholder="e.g., 123456789012",
+                )
+                kind_peer_input = st.text_input(
+                    "✨ Peer Appreciation (LRN or Identifier)"
+                )
+                groupmate_input = st.text_input(
+                    "🤝 Preferred Groupmate (LRN or Identifier)"
+                )
+                isolated_peer_input = st.text_input(
+                    "🫂 Reaching Out (LRN or Identifier)"
+                )
+
             counselor_request = st.text_area(
                 "🕊️ Confidential Counselor Support",
                 placeholder=(
@@ -364,51 +408,80 @@ if input_pin in student_pins:
             submitted = st.form_submit_button("Submit Confidential Reflection")
 
             if submitted:
-                if lrn.strip():
-                    try:
-                        # Process through Safeguarding & Anonymization Engine
-                        anon_lrn = generate_anonymous_id(lrn)
-                        anon_kind_peer = generate_anonymous_id(kind_peer)
-                        anon_groupmate = generate_anonymous_id(groupmate)
-                        anon_isolated_peer = generate_anonymous_id(
-                            isolated_peer
-                        )
-                        clean_counselor_req = sanitize_input(counselor_request)
+                try:
+                    if has_roster:
+                        if sender_name == "-- Select Your Name --":
+                            st.error("Please select your name before submitting.")
+                        else:
+                            anon_sender = roster_map.get(sender_name, "")
+                            anon_kind_peer = (
+                                roster_map.get(kind_peer_name, "")
+                                if kind_peer_name != "-- None / Skip --"
+                                else ""
+                            )
+                            anon_groupmate = (
+                                roster_map.get(groupmate_name, "")
+                                if groupmate_name != "-- None / Skip --"
+                                else ""
+                            )
+                            anon_isolated_peer = (
+                                roster_map.get(isolated_peer_name, "")
+                                if isolated_peer_name != "-- None / Skip --"
+                                else ""
+                            )
+                            clean_counselor_req = sanitize_input(counselor_request)
 
-                        ws = sh.worksheet("Pulse Checkins")
-                        ws.append_row([
-                            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            assigned_section,
-                            anon_lrn,
-                            anon_kind_peer,
-                            anon_groupmate,
-                            anon_isolated_peer,
-                            f"[Mood: {mood}] {clean_counselor_req}",
-                        ])
-                        st.success(
-                            f"💚 Thank you! Your reflection has been saved"
-                            f" securely as **{anon_lrn}**."
-                        )
-                    except Exception as e:
-                        st.error(f"Unable to save response right now: {e}")
-                else:
-                    st.error("Please enter your LRN before submitting.")
+                            ws = sh.worksheet("Pulse Checkins")
+                            ws.append_row([
+                                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                assigned_section,
+                                anon_sender,
+                                anon_kind_peer,
+                                anon_groupmate,
+                                anon_isolated_peer,
+                                f"[Mood: {mood}] {clean_counselor_req}",
+                            ])
+                            st.success(
+                                f"💚 Thank you! Your reflection has been saved securely as **{anon_sender}**."
+                            )
+                    else:
+                        if lrn_input.strip():
+                            anon_sender = generate_anonymous_id(lrn_input)
+                            anon_kind_peer = generate_anonymous_id(kind_peer_input)
+                            anon_groupmate = generate_anonymous_id(groupmate_input)
+                            anon_isolated_peer = generate_anonymous_id(isolated_peer_input)
+                            clean_counselor_req = sanitize_input(counselor_request)
 
-    # --- TAB 2: KINDNESS BADGES WITH VISUAL PREVIEWS ---
+                            ws = sh.worksheet("Pulse Checkins")
+                            ws.append_row([
+                                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                assigned_section,
+                                anon_sender,
+                                anon_kind_peer,
+                                anon_groupmate,
+                                anon_isolated_peer,
+                                f"[Mood: {mood}] {clean_counselor_req}",
+                            ])
+                            st.success(
+                                f"💚 Reflection saved securely as **{anon_sender}**."
+                            )
+                        else:
+                            st.error("Please enter your LRN before submitting.")
+                except Exception as e:
+                    st.error(f"Unable to save response right now: {e}")
+
+    # --- TAB 2: KINDNESS BADGES ---
     with tab2:
         st.markdown("##### Send a Secret Kindness Badge")
         st.caption(
-            "Recognize a classmate's positive impact with a quiet note of"
-            " appreciation!"
+            "Recognize a classmate's positive impact with a quiet note of appreciation!"
         )
 
         selected_badge_key = st.selectbox(
             "Select Badge to Award:", list(BADGE_DETAILS.keys())
         )
-
         badge_info = BADGE_DETAILS[selected_badge_key]
 
-        # Dynamic Badge Preview Card
         st.markdown(
             f"""
             <div class="badge-card" style="background-color: {badge_info['color']}; border: 1.5px solid {badge_info['border']};">
@@ -420,44 +493,64 @@ if input_pin in student_pins:
         )
 
         with st.form("badge_form", clear_on_submit=True):
-            recipient = st.text_input(
-                "Who are you sending this badge to?",
-                placeholder="Classmate's Identifier / LRN",
-            )
+            if has_roster:
+                recipient_name = st.selectbox(
+                    "Who are you sending this badge to?",
+                    ["-- Select Classmate --"] + sorted_names,
+                )
+            else:
+                recipient_input = st.text_input(
+                    "Who are you sending this badge to?",
+                    placeholder="Classmate's LRN / Identifier",
+                )
+
             note = st.text_area(
                 "Write a short note of encouragement (Optional)",
-                placeholder=(
-                    "e.g., Thank you for helping me during math practice today!"
-                ),
+                placeholder="e.g., Thank you for helping me during math practice today!",
                 height=80,
             )
 
             badge_submitted = st.form_submit_button("Send Kindness Badge ✨")
 
             if badge_submitted:
-                if recipient.strip():
-                    try:
-                        # Sanitize text and anonymize recipient identifier
-                        anon_recipient = generate_anonymous_id(recipient)
-                        clean_note = sanitize_input(note)
-
-                        ws = sh.worksheet("Kindness Badges")
-                        ws.append_row([
-                            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            assigned_section,
-                            anon_recipient,
-                            badge_info["badge_tag"],
-                            clean_note,
-                        ])
-                        st.balloons()
-                        st.success(
-                            f"🎉 Kindness badge successfully awarded to"
-                            f" **{anon_recipient}**!"
-                        )
-                    except Exception as e:
-                        st.error(f"Error sending badge: {e}")
-                else:
-                    st.error("Please enter the recipient's identifier.")
+                try:
+                    clean_note = sanitize_input(note)
+                    if has_roster:
+                        if recipient_name == "-- Select Classmate --":
+                            st.error("Please select a recipient from the list.")
+                        else:
+                            anon_recipient = roster_map.get(recipient_name, "")
+                            ws = sh.worksheet("Kindness Badges")
+                            ws.append_row([
+                                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                assigned_section,
+                                anon_recipient,
+                                badge_info["badge_tag"],
+                                clean_note,
+                            ])
+                            st.balloons()
+                            st.success(
+                                f"🎉 Kindness badge successfully awarded to **{anon_recipient}**!"
+                            )
+                    else:
+                        if recipient_input.strip():
+                            anon_recipient = generate_anonymous_id(recipient_input)
+                            ws = sh.worksheet("Kindness Badges")
+                            ws.append_row([
+                                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                assigned_section,
+                                anon_recipient,
+                                badge_info["badge_tag"],
+                                clean_note,
+                            ])
+                            st.balloons()
+                            st.success(
+                                f"🎉 Kindness badge successfully awarded to **{anon_recipient}**!"
+                            )
+                        else:
+                            st.error("Please enter recipient details.")
+                except Exception as e:
+                    st.error(f"Error sending badge: {e}")
 
 elif input_pin:
     st.error("Invalid Class PIN. Please check with your adviser or counselor.")
@@ -468,5 +561,5 @@ st.markdown("##### 🛡️ Institutional Compliance & Data Safeguarding")
 st.info("""
 **Regulatory Standards & Privacy Protocols:**
 * **DepEd Order No. 40, s. 2012 (Child Protection Policy):** The EMPOWER platform implements automated regex filtering to restrict inappropriate content, abusive language, or harassment, promoting a safe learning environment.
-* **Data Privacy Act of 2012 (Republic Act No. 10173):** Learner Reference Numbers (LRNs) are processed through a salted SHA-256 cryptographic function, generating unique anonymous tokens (`STU-XXXX`). Plaintext LRNs are never transmitted or saved to cloud servers.
+* **Data Privacy Act of 2012 (Republic Act No. 10173):** Learner Reference Numbers (LRNs) are processed through a salted SHA-256 cryptographic function, generating unique anonymous tokens (`STU-XXXX`). Plaintext student identities are mapped locally in client memory and are never saved to cloud sheets.
 """)
