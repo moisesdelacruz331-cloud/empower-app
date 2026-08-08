@@ -3,8 +3,124 @@ import pandas as pd
 import gspread
 from datetime import datetime
 
-st.set_page_config(page_title="EMPOWER | Student Space", page_icon="🌱", layout="centered")
+# Page Configuration
+st.set_page_config(
+    page_title="EMPOWER | Student Safe Haven", 
+    page_icon="🌱", 
+    layout="centered"
+)
 
+# --- DAILY INSPIRATIONAL QUOTES & BIBLE VERSES ---
+DAILY_INSPIRATIONS = [
+    {"type": "📖 Scripture", "text": "“For I know the plans I have for you,” declares the LORD, “plans to prosper you and not to harm you, plans to give you hope and a future.”", "author": "Jeremiah 29:11"},
+    {"type": "🌱 Daily Affirmation", "text": "“You are braver than you believe, stronger than you seem, and smarter than you think.”", "author": "A.A. Milne"},
+    {"type": "📖 Scripture", "text": "“Be strong and courageous. Do not be afraid; do not be discouraged, for the LORD your God will be with you wherever you go.”", "author": "Joshua 1:9"},
+    {"type": "✨ Reflection", "text": "“You don't have to carry everything all at once. Just focus on taking one gentle step today.”", "author": "Self-Care Reflection"},
+    {"type": "📖 Scripture", "text": "“Cast all your anxiety on Him because He cares for you.”", "author": "1 Peter 5:7"},
+    {"type": "🌱 Daily Affirmation", "text": "“Your feelings are valid, your voice matters, and your presence in this classroom makes a difference.”", "author": "EMPOWER Care Team"},
+    {"type": "📖 Scripture", "text": "“Peace I leave with you; my peace I give you. I do not give to you as the world gives. Do not let your hearts be troubled.”", "author": "John 14:27"}
+]
+
+# Get today's quote based on day of the year
+day_of_year = datetime.now().timetuple().tm_yday
+today_quote = DAILY_INSPIRATIONS[day_of_year % len(DAILY_INSPIRATIONS)]
+
+# --- BADGES DICTIONARY WITH DESCRIPTIONS & ICONS ---
+BADGE_DETAILS = {
+    "🌟 Quiet Hero": {
+        "icon": "🌟",
+        "title": "Quiet Hero",
+        "badge_tag": "Quiet Hero",
+        "description": "Always helping behind the scenes quietly without expecting praise or spotlight.",
+        "color": "#FFFBEB",
+        "border": "#FCD34D"
+    },
+    "🎧 Good Listener": {
+        "icon": "🎧",
+        "title": "Good Listener",
+        "badge_tag": "Good Listener",
+        "description": "Listens patiently with an open heart, offering comfort when a friend needs to talk.",
+        "color": "#EFF6FF",
+        "border": "#93C5FD"
+    },
+    "🤝 Team Player": {
+        "icon": "🤝",
+        "title": "Team Player",
+        "badge_tag": "Team Player",
+        "description": "Makes sure everyone is included, valued, and never left out during group activities.",
+        "color": "#F0FDF4",
+        "border": "#86EFAC"
+    },
+    "☀️ Sunshine Friend": {
+        "icon": "☀️",
+        "title": "Sunshine Friend",
+        "badge_tag": "Sunshine Friend",
+        "description": "Brings warmth, smiles, and positive energy that brightens up the whole classroom.",
+        "color": "#FEF3C7",
+        "border": "#F59E0B"
+    },
+    "🛡️ Safe Harbor": {
+        "icon": "🛡️",
+        "title": "Safe Harbor",
+        "badge_tag": "Safe Harbor",
+        "description": "A calm, trustworthy classmate who makes others feel physically and emotionally safe.",
+        "color": "#F3E8FF",
+        "border": "#C084FC"
+    }
+}
+
+# --- CUSTOM CSS FOR CALMING UI ---
+st.markdown("""
+    <style>
+    .stApp {
+        background: linear-gradient(180deg, #F4F8F7 0%, #EBF3F5 100%);
+    }
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+
+    .quote-box {
+        background: #FFFFFF;
+        border-left: 5px solid #52B788;
+        padding: 16px 20px;
+        border-radius: 12px;
+        box-shadow: 0px 4px 12px rgba(0, 0, 0, 0.03);
+        margin-bottom: 20px;
+    }
+    
+    .privacy-badge {
+        background-color: #EBF5EE;
+        border: 1px solid #B8E0D2;
+        color: #2D6A4F;
+        padding: 10px 16px;
+        border-radius: 12px;
+        font-size: 0.88rem;
+        margin-bottom: 20px;
+    }
+
+    .badge-card {
+        padding: 14px;
+        border-radius: 14px;
+        margin-top: 10px;
+        margin-bottom: 15px;
+    }
+
+    .stButton > button {
+        background-color: #52B788 !important;
+        color: white !important;
+        border-radius: 12px !important;
+        padding: 10px 24px !important;
+        font-weight: 600 !important;
+        border: none !important;
+        box-shadow: 0px 4px 12px rgba(82, 183, 136, 0.25) !important;
+    }
+
+    .stButton > button:hover {
+        background-color: #40916C !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# --- DATABASE CONNECTION ---
 @st.cache_resource
 def connect_to_gsheet():
     creds = dict(st.secrets["connections"]["gsheets"])
@@ -19,7 +135,6 @@ def load_student_pins():
         sh = connect_to_gsheet()
         ws = sh.worksheet("Class Configuration")
         df = pd.DataFrame(ws.get_all_records())
-        # Convert to dictionary {Student_PIN: Section_Name}
         pin_map = {}
         for _, row in df.iterrows():
             s_pin = str(row["Student PIN"]).strip()
@@ -33,33 +148,58 @@ def load_student_pins():
 try:
     sh = connect_to_gsheet()
 except Exception:
-    st.warning("Running in offline mode.")
+    st.warning("🌱 Running in offline preview mode.")
 
-st.title("🌱 EMPOWER Student Space")
+# --- HEADER & DAILY INSPIRATION ---
+st.markdown("## 🌱 EMPOWER Safe Space")
+st.caption("Fatima National High School | Guidance & Peer Support Hub")
 
-# --- PIN VERIFICATION ---
-st.markdown("### 🔑 Step 1: Verify Your Class")
+st.markdown(f"""
+    <div class="quote-box">
+        <small style="color: #52B788; font-weight: 700;">{today_quote['type']} for Today</small>
+        <p style="color: #2D3748; font-size: 0.98rem; font-style: italic; margin: 6px 0 2px 0;">{today_quote['text']}</p>
+        <small style="color: #718096; font-weight: 600;">— {today_quote['author']}</small>
+    </div>
+""", unsafe_allow_html=True)
+
+st.markdown("""
+    <div class="privacy-badge">
+        🔒 <b>Safe & Confidential:</b> Your reflections are protected and shared strictly with your guidance counselor.
+    </div>
+""", unsafe_allow_html=True)
+
+# --- STEP 1: CLASS PIN VERIFICATION ---
 student_pins = load_student_pins()
-
-input_pin = st.text_input("Enter your Class PIN:", type="password", help="Ask your teacher or counselor for your PIN.").strip()
+input_pin = st.text_input("🔑 Enter your 4-digit Class PIN to begin:", type="password", help="Ask your adviser or counselor for your PIN.").strip()
 
 if input_pin in student_pins:
     assigned_section = student_pins[input_pin]
-    st.success(f"Verified: **Section {assigned_section}**")
-    st.markdown("---")
+    st.success(f"Welcome! Connected to **Section {assigned_section}**")
+    
+    # Optional Interactive Mood Check
+    st.markdown("##### How are you feeling right now?")
+    mood = st.select_slider(
+        "Move the slider to share your current mood:",
+        options=["🌧️ Overwhelmed", "⛅ A bit tired", "🌱 Neutral / OK", "☀️ Feeling Good", "🎉 Excited & Happy"],
+        value="🌱 Neutral / OK"
+    )
 
+    st.markdown("---")
     tab1, tab2 = st.tabs(["💬 Weekly Reflection", "💌 Send Kindness Badge"])
 
-    # TAB 1: REFLECTION
+    # --- TAB 1: PULSE CHECK-IN ---
     with tab1:
+        st.markdown("##### Weekly Student Check-In")
+        st.caption("Take your time. Share only what you feel comfortable sharing.")
+
         with st.form("pulse_form", clear_on_submit=True):
-            lrn = st.text_input("Learner Reference Number (LRN)")
-            kind_peer = st.text_input("✨ Who showed kindness to you this week?")
-            groupmate = st.text_input("🤝 Who would you like to sit/work with next week?")
-            isolated_peer = st.text_input("🫂 Who in class seems quiet or left out lately?")
-            counselor_request = st.text_area("🕊️ Request Confidential Chat with Counselor (Optional)")
+            lrn = st.text_input("Learner Reference Number (LRN)", placeholder="e.g., 123456789012")
+            kind_peer = st.text_input("✨ Peer Appreciation", placeholder="Who showed kindness or helped you this week?")
+            groupmate = st.text_input("🤝 Preferred Groupmate", placeholder="Who would you feel comfortable working/sitting with next week?")
+            isolated_peer = st.text_input("🫂 Reaching Out", placeholder="Who in class seems quiet, overwhelmed, or left out lately?")
+            counselor_request = st.text_area("🕊️ Confidential Counselor Support", placeholder="Would you like a private, friendly chat with the counselor? Tell us how we can help...", height=90)
             
-            submitted = st.form_submit_button("Submit Confidential Check-In")
+            submitted = st.form_submit_button("Submit Confidential Reflection")
 
             if submitted:
                 if lrn.strip():
@@ -72,20 +212,37 @@ if input_pin in student_pins:
                             kind_peer,
                             groupmate,
                             isolated_peer,
-                            counselor_request
+                            f"[Mood: {mood}] {counselor_request}"
                         ])
-                        st.success("💚 Response submitted confidentially!")
+                        st.success("💚 Thank you! Your reflection has been saved confidentially.")
                     except Exception as e:
-                        st.error(f"Error submitting entry: {e}")
+                        st.error(f"Unable to save response right now: {e}")
                 else:
-                    st.error("Please enter your LRN.")
+                    st.error("Please enter your LRN before submitting.")
 
-    # TAB 2: KINDNESS BADGES
+    # --- TAB 2: KINDNESS BADGES WITH VISUAL PREVIEWS ---
     with tab2:
+        st.markdown("##### Send a Secret Kindness Badge")
+        st.caption("Recognize a classmate's positive impact with a quiet note of appreciation!")
+
+        selected_badge_key = st.selectbox(
+            "Select Badge to Award:",
+            list(BADGE_DETAILS.keys())
+        )
+
+        badge_info = BADGE_DETAILS[selected_badge_key]
+
+        # Dynamic Badge Preview Card
+        st.markdown(f"""
+            <div class="badge-card" style="background-color: {badge_info['color']}; border: 1.5px solid {badge_info['border']};">
+                <h4 style="margin:0; color: #1E293B;">{badge_info['icon']} {badge_info['title']}</h4>
+                <p style="margin: 6px 0 0 0; color: #475569; font-size: 0.9rem;">{badge_info['description']}</p>
+            </div>
+        """, unsafe_allow_html=True)
+
         with st.form("badge_form", clear_on_submit=True):
-            recipient = st.text_input("Recipient Name")
-            badge_type = st.selectbox("Badge Type", ["Quiet Hero", "Good Listener", "Team Player", "Sunshine Friend"])
-            note = st.text_area("Short Note (Optional)")
+            recipient = st.text_input("Who are you sending this badge to?", placeholder="Classmate's Full Name")
+            note = st.text_area("Write a short note of encouragement (Optional)", placeholder="e.g., Thank you for helping me during math practice today!", height=80)
             
             badge_submitted = st.form_submit_button("Send Kindness Badge ✨")
 
@@ -97,15 +254,15 @@ if input_pin in student_pins:
                             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                             assigned_section,
                             recipient.strip(),
-                            badge_type,
+                            badge_info['badge_tag'],
                             note
                         ])
                         st.balloons()
-                        st.success(f"Kindness badge sent to {recipient}!")
+                        st.success(f"🎉 Kindness badge successfully awarded to **{recipient}**!")
                     except Exception as e:
                         st.error(f"Error sending badge: {e}")
                 else:
                     st.error("Please enter the recipient's name.")
 
 elif input_pin:
-    st.error("Invalid Class PIN. Please double-check with your adviser.")
+    st.error("Invalid Class PIN. Please check with your adviser or counselor.")
