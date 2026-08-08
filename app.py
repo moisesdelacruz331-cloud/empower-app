@@ -150,9 +150,15 @@ try:
 except Exception:
     st.warning("🌱 Running in offline preview mode.")
 
-# --- HEADER & DAILY INSPIRATION ---
-st.markdown("## 🌱 EMPOWER Safe Space")
-st.caption("Fatima National High School | Guidance & Peer Support Hub")
+# --- HEADER WITH SCHOOL LOGO & DAILY INSPIRATION ---
+col_logo, col_title = st.columns([1, 4])
+
+with col_logo:
+    st.image("fatimanhslogo.jpg", width=90)
+
+with col_title:
+    st.markdown("## 🌱 EMPOWER Safe Space")
+    st.caption("Fatima National High School | Guidance & Peer Support Hub")
 
 st.markdown(f"""
     <div class="quote-box">
