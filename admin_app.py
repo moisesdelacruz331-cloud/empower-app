@@ -1,3 +1,4 @@
+import hashlib
 import gspread
 import networkx as nx
 import pandas as pd
@@ -9,6 +10,21 @@ import streamlit as st
 st.set_page_config(
     page_title="EMPOWER Teacher & Counselor Portal", page_icon="📊", layout="wide"
 )
+
+# Salt Key for Anonymization Alignment
+SALT_KEY = st.secrets.get("SALT_KEY", "EMPOWER_2026_SECURE_SALT")
+
+
+# --- ANONYMIZATION UTILITIES ---
+def generate_anonymous_id(raw_id: str, salt: str = SALT_KEY) -> str:
+    """Generates the same salted SHA-256 token used in student check-ins."""
+    if not raw_id or str(raw_id).strip() == "":
+        return ""
+    clean_id = str(raw_id).strip()
+    salted_bytes = f"{clean_id}{salt}".encode("utf-8")
+    hash_digest = hashlib.sha256(salted_bytes).hexdigest()
+    return f"STU-{hash_digest[:4].upper()}"
+
 
 # Custom Styling
 st.markdown(
@@ -216,6 +232,93 @@ def render_sociogram_analytics(df_pulse):
     return isolated_nodes
 
 
+# --- COUNSELOR DE-ANONYMIZATION MODULE ---
+def render_student_lookup_tool():
+    """Provides authorized guidance personnel with two-way token resolution
+
+    to identify flagged high-risk or isolated students.
+    """
+    st.subheader("🔍 Confidential Student De-Anonymization Tool")
+    st.caption(
+        "Authorized Guidance Counselor Feature — Compliant with Data Privacy"
+        " Act of 2012 (RA 10173)"
+    )
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        target_token = (
+            st.text_input(
+                "Enter Flagged Anonymous Token (e.g., STU-8A2F):",
+                placeholder="STU-8A2F",
+            )
+            .strip()
+            .upper()
+        )
+
+    with col2:
+        input_lrn = st.text_input(
+            "Verify Known Student LRN:", placeholder="e.g., 123456789012"
+        ).strip()
+
+    if input_lrn:
+        generated_token = generate_anonymous_id(input_lrn)
+        if target_token and generated_token == target_token:
+            st.success(
+                f"✅ **MATCH CONFIRMED:** LRN `{input_lrn}` maps directly to"
+                f" **{generated_token}**."
+            )
+        else:
+            st.info(f"LRN `{input_lrn}` generates token: **{generated_token}**")
+
+    st.markdown("---")
+    st.markdown("##### 📋 Batch Roster Resolver")
+    st.caption(
+        "Upload an official section roster (CSV containing 'LRN' and 'Student"
+        " Name') to match anonymous flags locally."
+    )
+
+    uploaded_file = st.file_uploader(
+        "Upload Class Roster CSV",
+        type=["csv"],
+        help="Processed entirely in-memory; student details are never stored to cloud servers.",
+    )
+
+    if uploaded_file is not None:
+        try:
+            roster_df = pd.read_csv(uploaded_file)
+            if "LRN" in roster_df.columns:
+                roster_df["LRN"] = roster_df["LRN"].astype(str).str.strip()
+                roster_df["Anonymous Token"] = roster_df["LRN"].apply(
+                    generate_anonymous_id
+                )
+
+                if target_token:
+                    matched_student = roster_df[
+                        roster_df["Anonymous Token"] == target_token
+                    ]
+                    if not matched_student.empty:
+                        student_info = matched_student.iloc[0]
+                        st.error(
+                            f"🚨 **MATCH FOUND FOR {target_token}:**\n\n"
+                            f"* **Student Name:**"
+                            f" {student_info.get('Student Name', 'N/A')}\n"
+                            f"* **LRN:** {student_info.get('LRN')}"
+                        )
+                    else:
+                        st.warning(
+                            f"No student matching token **{target_token}**"
+                            " found in this uploaded roster."
+                        )
+
+                with st.expander("View Full Section Anonymization Mapping"):
+                    st.dataframe(roster_df, use_container_width=True)
+            else:
+                st.error("CSV file must contain an 'LRN' column.")
+        except Exception as e:
+            st.error(f"Error processing roster file: {e}")
+
+
 # --- DATABASE CONNECTIONS ---
 @st.cache_resource
 def connect_to_gsheet():
@@ -350,7 +453,8 @@ else:
     with col_title:
         st.title(f"Classroom Wellbeing Overview: {assigned_section}")
         st.caption(
-            "Real-time emotional climate, student check-ins, kindness badge log, and support alerts."
+            "Real-time emotional climate, student check-ins, kindness badge"
+            " log, and support alerts."
         )
 
     # Top Metrics
@@ -411,11 +515,19 @@ else:
 
     # Dashboard Tabs
     if role == "Counselor":
-        tab_mood, tab_pulse, tab_badges, tab_peer, tab_pin = st.tabs([
+        (
+            tab_mood,
+            tab_pulse,
+            tab_badges,
+            tab_peer,
+            tab_lookup,
+            tab_pin,
+        ) = st.tabs([
             "📈 Mood Visualizations",
             "💬 Pulse Check-Ins",
             "🏅 Kindness Badges",
             "🫂 Peer Inclusion Watchlist",
+            "🔍 Student De-Anonymization",
             "⚙️ PIN Manager",
         ])
     else:
@@ -507,7 +619,8 @@ else:
     with tab_peer:
         st.subheader("🫂 Peer Inclusion & Sociometric Analytics")
         st.caption(
-            "Interactive network graph identifying peer centrality and structurally isolated students ($deg^- = 0$)."
+            "Interactive network graph identifying peer centrality and"
+            " structurally isolated students ($deg^- = 0$)."
         )
 
         # Render Network Graph, Interpretation, & Extract Isolated Identifiers
@@ -547,13 +660,19 @@ else:
                 st.dataframe(isolated_df[show_cols], use_container_width=True)
             else:
                 st.info(
-                    "No manual peer isolation reports submitted in this section."
+                    "No manual peer isolation reports submitted in this"
+                    " section."
                 )
         else:
             st.info("No peer isolation data available.")
 
-    # TAB 5: COUNSELOR PIN MANAGEMENT
+    # COUNSELOR-ONLY TABS
     if role == "Counselor":
+        # TAB 5: STUDENT DE-ANONYMIZATION LOOKUP
+        with tab_lookup:
+            render_student_lookup_tool()
+
+        # TAB 6: COUNSELOR PIN MANAGEMENT
         with tab_pin:
             st.subheader("⚙️ Manage Sections & Access PINs")
             pin_df = load_pin_config()
