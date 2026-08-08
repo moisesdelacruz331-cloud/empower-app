@@ -69,6 +69,7 @@ if "auth_role" not in st.session_state:
 if not st.session_state.auth_role:
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
+        st.image("fatimanhslogo.png", width=80)
         st.title("🔒 EMPOWER Staff Portal")
         login_pin = st.text_input("Enter Teacher PIN / Passcode:", type="password").strip()
         
@@ -97,6 +98,7 @@ else:
     role = st.session_state.auth_role
     assigned_section = st.session_state.auth_section
     
+    st.sidebar.image("fatimanhslogo.png", width=100)
     st.sidebar.title("📊 Staff Analytics")
     st.sidebar.write(f"Role: **{role}**")
     st.sidebar.write(f"Assigned Scope: **{assigned_section}**")
@@ -129,8 +131,12 @@ else:
         if not df_badges.empty and "Class/Section" in df_badges.columns:
             df_badges = df_badges[df_badges["Class/Section"] == assigned_section]
 
-    st.title(f"🏫 Classroom Wellbeing Overview: {assigned_section}")
-    st.caption("Real-time emotional climate, student check-ins, kindness badge log, and support alerts.")
+    col_logo, col_title = st.columns([1, 6])
+    with col_logo:
+        st.image("fatimanhslogo.png", width=70)
+    with col_title:
+        st.title(f"Classroom Wellbeing Overview: {assigned_section}")
+        st.caption("Real-time emotional climate, student check-ins, kindness badge log, and support alerts.")
 
     # --- TOP METRICS ---
     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
