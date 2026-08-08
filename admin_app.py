@@ -1,3 +1,4 @@
+from datetime import datetime
 import hashlib
 import gspread
 import networkx as nx
@@ -51,13 +52,13 @@ st.markdown(
 
 
 # --- SOCIOMETRIC GRAPH ANALYSIS MODULE ---
-def render_sociogram_analytics(df_pulse):
-    """Generates an interactive Plotly sociogram network graph from peer nominations,
+def render_sociogram_analytics(df_pulse, section_label="Active View"):
+    """Generates an interactive Plotly sociogram network graph from peer nominations
 
-    identifies structurally isolated nodes, and provides real-time teacher interpretations.
+    for a specific section, identifies structurally isolated nodes, and provides interpretations.
     """
     if df_pulse.empty:
-        st.info("No check-in data available to build network graph.")
+        st.info(f"No check-in data available to build network graph for {section_label}.")
         return []
 
     # Initialize Directed Network Graph
@@ -88,14 +89,14 @@ def render_sociogram_analytics(df_pulse):
                 G.add_edge(sender, preferred_peer, relation="Preferred Partner")
 
     if G.number_of_nodes() == 0:
-        st.info("Insufficient peer nomination records to render sociogram.")
+        st.info(f"Insufficient peer nomination records to render sociogram for {section_label}.")
         return []
 
     # Calculate Network Centrality Metrics
     in_degree = dict(G.in_degree())
     n_nodes = G.number_of_nodes()
 
-    # Degree Centrality Formula: C_d(v) = in_degree(v) / (N - 1)
+    # Degree Centrality
     centrality = (
         {node: deg / (n_nodes - 1) for node, deg in in_degree.items()}
         if n_nodes > 1
@@ -168,7 +169,7 @@ def render_sociogram_analytics(df_pulse):
     fig = go.Figure(data=[edge_trace, node_trace])
     fig.update_layout(
         title=dict(
-            text="<b>Classroom Sociogram: Peer Inclusion & Isolation Network</b>",
+            text=f"<b>Classroom Sociogram Network — Section: {section_label}</b>",
             font=dict(size=16),
         ),
         showlegend=False,
@@ -203,11 +204,11 @@ def render_sociogram_analytics(df_pulse):
 
     st.markdown("---")
 
-    # REAL-TIME INTERPRETATION BREAKDOWN FOR TEACHERS
-    st.subheader("💡 Real-Time Sociogram Interpretation")
+    # REAL-TIME INTERPRETATION BREAKDOWN
+    st.subheader(f"💡 Real-Time Sociogram Interpretation ({section_label})")
 
     col_m1, col_m2, col_m3 = st.columns(3)
-    col_m1.metric("Classroom Inclusion Rate", f"{inclusion_rate:.1f}%")
+    col_m1.metric("Section Inclusion Rate", f"{inclusion_rate:.1f}%")
     col_m2.metric(
         "Top Connected Peer Anchor(s)",
         f"{', '.join(top_peers) if top_peers else 'None'}",
@@ -216,10 +217,10 @@ def render_sociogram_analytics(df_pulse):
     col_m3.metric("Isolated Students", f"{len(isolated_nodes)} of {n_nodes}")
 
     with st.expander(
-        "📖 **Teacher Guidance & Pedagogical Action Plan**", expanded=True
+        f"📖 **Guidance & Pedagogical Action Plan ({section_label})**", expanded=True
     ):
         st.markdown(f"""
-        * **Social Climate Summary:** **{inclusion_rate:.1f}%** of students in this section were nominated by at least one peer as a preferred groupmate or kind classmate.
+        * **Social Climate Summary:** **{inclusion_rate:.1f}%** of students in **{section_label}** were nominated by at least one peer as a preferred groupmate or kind classmate.
         * **Peer Anchors (Bridge Builders):** Student(s) **{', '.join(top_peers) if top_peers else 'None'}** hold the highest centrality. They are trusted by peers and can serve as positive group leaders.
         * **Isolated Nodes:** Student(s) **{', '.join(isolated_nodes) if isolated_nodes else 'None'}** received zero nominations, putting them at structural risk for social isolation or low participation.
 
@@ -415,7 +416,52 @@ else:
     st.sidebar.image("fatimanhslogo.png", width=100)
     st.sidebar.title("📊 Staff Analytics")
     st.sidebar.write(f"Role: **{role}**")
-    st.sidebar.write(f"Assigned Scope: **{assigned_section}**")
+
+    sh = connect_to_gsheet()
+
+    # Load master datasets
+    try:
+        ws_pulse = sh.worksheet("Pulse Checkins")
+        df_pulse_raw = parse_mood_and_requests(
+            pd.DataFrame(ws_pulse.get_all_records())
+        )
+    except Exception:
+        df_pulse_raw = pd.DataFrame()
+
+    try:
+        ws_badges = sh.worksheet("Kindness Badges")
+        df_badges_raw = pd.DataFrame(ws_badges.get_all_records())
+    except Exception:
+        df_badges_raw = pd.DataFrame()
+
+    pin_df = load_pin_config()
+
+    # SECTION SELECTION CONTROLS FOR COUNSELOR
+    if role == "Counselor":
+        available_sections = []
+        if not df_pulse_raw.empty and "Class/Section" in df_pulse_raw.columns:
+            available_sections.extend(df_pulse_raw["Class/Section"].dropna().astype(str).unique().tolist())
+        if not pin_df.empty and "Class/Section" in pin_df.columns:
+            available_sections.extend(pin_df["Class/Section"].dropna().astype(str).unique().tolist())
+
+        sorted_sections = sorted(list(set([s.strip() for s in available_sections if s.strip()])))
+        counselor_section_options = ["ALL (All Sections Aggregated)"] + sorted_sections
+
+        st.sidebar.markdown("---")
+        selected_view_scope = st.sidebar.selectbox(
+            "🎯 Counselor View Scope:",
+            options=counselor_section_options,
+            help="Filter entire dashboard by section or view all combined data."
+        )
+
+        if selected_view_scope == "ALL (All Sections Aggregated)":
+            active_section_filter = "ALL"
+        else:
+            active_section_filter = selected_view_scope
+    else:
+        active_section_filter = assigned_section
+
+    st.sidebar.write(f"Active Scope Filter: **{active_section_filter}**")
 
     if st.sidebar.button("Logout"):
         st.session_state.auth_role = None
@@ -423,35 +469,21 @@ else:
         st.cache_data.clear()
         st.rerun()
 
-    sh = connect_to_gsheet()
+    # FILTER DATASETS BASED ON ACTIVE SCOPE
+    df_pulse = df_pulse_raw.copy()
+    df_badges = df_badges_raw.copy()
 
-    try:
-        ws_pulse = sh.worksheet("Pulse Checkins")
-        df_pulse = parse_mood_and_requests(
-            pd.DataFrame(ws_pulse.get_all_records())
-        )
-    except Exception:
-        df_pulse = pd.DataFrame()
-
-    try:
-        ws_badges = sh.worksheet("Kindness Badges")
-        df_badges = pd.DataFrame(ws_badges.get_all_records())
-    except Exception:
-        df_badges = pd.DataFrame()
-
-    if assigned_section != "ALL":
+    if active_section_filter != "ALL":
         if not df_pulse.empty and "Class/Section" in df_pulse.columns:
-            df_pulse = df_pulse[df_pulse["Class/Section"] == assigned_section]
+            df_pulse = df_pulse[df_pulse["Class/Section"].astype(str).str.strip() == active_section_filter]
         if not df_badges.empty and "Class/Section" in df_badges.columns:
-            df_badges = df_badges[
-                df_badges["Class/Section"] == assigned_section
-            ]
+            df_badges = df_badges[df_badges["Class/Section"].astype(str).str.strip() == active_section_filter]
 
     col_logo, col_title = st.columns([1, 6])
     with col_logo:
         st.image("fatimanhslogo.png", width=70)
     with col_title:
-        st.title(f"Classroom Wellbeing Overview: {assigned_section}")
+        st.title(f"Classroom Wellbeing Overview: {active_section_filter}")
         st.caption(
             "Real-time emotional climate, student check-ins, kindness badge"
             " log, and support alerts."
@@ -491,7 +523,7 @@ else:
             st.markdown(
                 f"""
                 <div class="alert-high">
-                    <b>⚠️ Priority Support Needed:</b> {len(high_risk)} student entry/entries indicate distress or requested a private chat.
+                    <b>⚠️ Priority Support Needed ({active_section_filter}):</b> {len(high_risk)} student entry/entries indicate distress or requested a private chat.
                 </div>
             """,
                 unsafe_allow_html=True,
@@ -526,7 +558,7 @@ else:
             "📈 Mood Visualizations",
             "💬 Pulse Check-Ins",
             "🏅 Kindness Badges",
-            "🫂 Peer Inclusion Watchlist",
+            "🫂 Peer Inclusion & Sociogram",
             "🔍 Student De-Anonymization",
             "⚙️ PIN Manager",
         ])
@@ -535,12 +567,12 @@ else:
             "📈 Mood Visualizations",
             "💬 Pulse Check-Ins",
             "🏅 Kindness Badges",
-            "🫂 Peer Inclusion Watchlist",
+            "🫂 Peer Inclusion & Sociogram",
         ])
 
     # TAB 1: MOOD VISUALIZATIONS
     with tab_mood:
-        st.subheader("📈 Classroom Emotional Climate")
+        st.subheader(f"📈 Classroom Emotional Climate ({active_section_filter})")
         if not df_pulse.empty and "Mood" in df_pulse.columns:
             col_chart1, col_chart2 = st.columns(2)
             mood_counts = df_pulse["Mood"].value_counts().reset_index()
@@ -552,7 +584,7 @@ else:
                     x="Mood",
                     y="Count",
                     color="Mood",
-                    title="Student Mood Counts",
+                    title=f"Student Mood Counts - {active_section_filter}",
                     color_discrete_sequence=px.colors.qualitative.Pastel,
                 )
                 fig_bar.update_layout(showlegend=False)
@@ -564,7 +596,7 @@ else:
                     names="Mood",
                     values="Count",
                     hole=0.4,
-                    title="Mood Share Breakdown",
+                    title=f"Mood Share Breakdown - {active_section_filter}",
                     color_discrete_sequence=px.colors.qualitative.Set3,
                 )
                 st.plotly_chart(fig_pie, use_container_width=True)
@@ -573,7 +605,7 @@ else:
 
     # TAB 2: PULSE CHECK-INS LOG
     with tab_pulse:
-        st.subheader("💬 Confidential Student Pulse Check-Ins")
+        st.subheader(f"💬 Confidential Student Pulse Check-Ins ({active_section_filter})")
         if not df_pulse.empty:
             display_cols = [
                 "Timestamp",
@@ -593,15 +625,15 @@ else:
             st.download_button(
                 "📥 Export Pulse Check-Ins (CSV)",
                 data=csv_pulse,
-                file_name=f"pulse_checkins_{assigned_section}.csv",
+                file_name=f"pulse_checkins_{active_section_filter}.csv",
                 mime="text/csv",
             )
         else:
-            st.info("No pulse check-in entries found for this section yet.")
+            st.info(f"No pulse check-in entries found for {active_section_filter} yet.")
 
     # TAB 3: KINDNESS BADGES LOG
     with tab_badges:
-        st.subheader("🏅 Peer Kindness Badges Log")
+        st.subheader(f"🏅 Peer Kindness Badges Log ({active_section_filter})")
         if not df_badges.empty:
             st.dataframe(df_badges, use_container_width=True)
 
@@ -609,11 +641,11 @@ else:
             st.download_button(
                 "📥 Export Kindness Badges (CSV)",
                 data=csv_badges,
-                file_name=f"kindness_badges_{assigned_section}.csv",
+                file_name=f"kindness_badges_{active_section_filter}.csv",
                 mime="text/csv",
             )
         else:
-            st.info("No kindness badges sent in this section yet.")
+            st.info(f"No kindness badges sent in {active_section_filter} yet.")
 
     # TAB 4: PEER INCLUSION WATCHLIST & SOCIOGRAM NETWORK
     with tab_peer:
@@ -623,14 +655,47 @@ else:
             " structurally isolated students ($deg^- = 0$)."
         )
 
-        # Render Network Graph, Interpretation, & Extract Isolated Identifiers
-        isolated_students = render_sociogram_analytics(df_pulse)
+        # DEDICATED COUNSELOR PER-SECTION SOCIOGRAM SELECTOR
+        if role == "Counselor":
+            if not df_pulse_raw.empty and "Class/Section" in df_pulse_raw.columns:
+                available_socio_sections = sorted(list(set(
+                    df_pulse_raw["Class/Section"].dropna().astype(str).unique().tolist()
+                )))
+            else:
+                available_socio_sections = []
+
+            if available_socio_sections:
+                if active_section_filter in available_socio_sections:
+                    default_idx = available_socio_sections.index(active_section_filter)
+                else:
+                    default_idx = 0
+
+                target_sociogram_section = st.selectbox(
+                    "📌 Select Section to Generate Sociogram Network:",
+                    options=available_socio_sections,
+                    index=default_idx,
+                    key="socio_section_picker",
+                    help="Sociograms are calculated on a per-section basis to preserve real classroom interaction boundaries."
+                )
+
+                df_sociogram = df_pulse_raw[
+                    df_pulse_raw["Class/Section"].astype(str).str.strip() == target_sociogram_section
+                ]
+            else:
+                target_sociogram_section = active_section_filter
+                df_sociogram = df_pulse
+        else:
+            target_sociogram_section = active_section_filter
+            df_sociogram = df_pulse
+
+        # Render Section-Specific Sociogram
+        isolated_students = render_sociogram_analytics(df_sociogram, section_label=target_sociogram_section)
 
         if isolated_students:
             st.markdown(
                 f"""
                 <div class="alert-watch">
-                    <b>🚨 Sociometric Isolation Alert:</b> {len(isolated_students)} student(s) received 0 incoming peer nominations:<br>
+                    <b>🚨 Sociometric Isolation Alert ({target_sociogram_section}):</b> {len(isolated_students)} student(s) received 0 incoming peer nominations:<br>
                     <b>Isolated Node Identifiers:</b> {', '.join(isolated_students)}
                 </div>
             """,
@@ -638,11 +703,11 @@ else:
             )
 
         st.markdown("---")
-        st.subheader("📋 Peer-Nominated Isolation Reports")
+        st.subheader(f"📋 Peer-Nominated Isolation Reports ({target_sociogram_section})")
 
-        if not df_pulse.empty and "Isolated Peer" in df_pulse.columns:
-            isolated_df = df_pulse[
-                df_pulse["Isolated Peer"].astype(str).str.strip() != ""
+        if not df_sociogram.empty and "Isolated Peer" in df_sociogram.columns:
+            isolated_df = df_sociogram[
+                df_sociogram["Isolated Peer"].astype(str).str.strip() != ""
             ]
 
             if not isolated_df.empty:
@@ -660,8 +725,7 @@ else:
                 st.dataframe(isolated_df[show_cols], use_container_width=True)
             else:
                 st.info(
-                    "No manual peer isolation reports submitted in this"
-                    " section."
+                    f"No manual peer isolation reports submitted in {target_sociogram_section}."
                 )
         else:
             st.info("No peer isolation data available.")
