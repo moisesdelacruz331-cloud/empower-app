@@ -2,34 +2,26 @@ import streamlit as st
 import pandas as pd
 import gspread
 import plotly.express as px
-import re
 
 # Page Configuration
 st.set_page_config(page_title="EMPOWER Teacher & Counselor Portal", page_icon="📊", layout="wide")
 
-# Custom CSS for Teacher Dashboard
+# Custom Styling
 st.markdown("""
     <style>
-    .metric-card {
-        background-color: #FFFFFF;
-        border-radius: 12px;
-        padding: 16px;
-        border: 1px solid #E2E8F0;
-        box-shadow: 0px 4px 10px rgba(0, 0, 0, 0.03);
-    }
     .alert-high {
         background-color: #FEF2F2;
         border-left: 5px solid #EF4444;
         padding: 12px 16px;
         border-radius: 8px;
-        margin-bottom: 12px;
+        margin-bottom: 16px;
     }
     .alert-watch {
         background-color: #FFFBEB;
         border-left: 5px solid #F59E0B;
         padding: 12px 16px;
         border-radius: 8px;
-        margin-bottom: 12px;
+        margin-bottom: 16px;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -48,12 +40,11 @@ def load_pin_config():
     try:
         sh = connect_to_gsheet()
         ws = sh.worksheet("Class Configuration")
-        df = pd.DataFrame(ws.get_all_records())
-        return df
+        return pd.DataFrame(ws.get_all_records())
     except Exception:
         return pd.DataFrame(columns=["Class/Section", "Student PIN", "Teacher PIN"])
 
-# Helper function to extract Mood and clean text
+# Helper function to extract Mood and clean Counselor Requests
 def parse_mood_and_requests(df):
     if df.empty:
         df["Mood"] = []
@@ -61,11 +52,8 @@ def parse_mood_and_requests(df):
         return df
     
     if "Counselor Request" in df.columns:
-        # Extract mood tag like [Mood: 🌧️ Overwhelmed]
         df['Mood'] = df['Counselor Request'].astype(str).str.extract(r'\[Mood:\s*([^\]]+)\]')
         df['Mood'] = df['Mood'].fillna("🌱 Not Specified")
-        
-        # Clean request string for display
         df['Clean_Counselor_Request'] = df['Counselor Request'].astype(str).str.replace(r'\[Mood:\s*([^\]]+)\]\s*', '', regex=True)
     else:
         df['Mood'] = "🌱 Not Specified"
@@ -84,7 +72,7 @@ if not st.session_state.auth_role:
         st.title("🔒 EMPOWER Staff Portal")
         login_pin = st.text_input("Enter Teacher PIN / Passcode:", type="password").strip()
         
-        if st.button("Login to Analytics"):
+        if st.button("Login to Dashboard"):
             counselor_pass = str(st.secrets.get("ADMIN_PASSWORD", "COUNSELOR2026")).strip()
             
             if login_pin == counselor_pass:
@@ -121,41 +109,46 @@ else:
 
     sh = connect_to_gsheet()
 
-    # Load Data
-    ws_pulse = sh.worksheet("Pulse Checkins")
-    raw_pulse = pd.DataFrame(ws_pulse.get_all_records())
-    df_pulse = parse_mood_and_requests(raw_pulse)
+    # Load Both Worksheets
+    try:
+        ws_pulse = sh.worksheet("Pulse Checkins")
+        df_pulse = parse_mood_and_requests(pd.DataFrame(ws_pulse.get_all_records()))
+    except Exception:
+        df_pulse = pd.DataFrame()
 
-    if not df_pulse.empty and "Class/Section" in df_pulse.columns:
-        if assigned_section != "ALL":
+    try:
+        ws_badges = sh.worksheet("Kindness Badges")
+        df_badges = pd.DataFrame(ws_badges.get_all_records())
+    except Exception:
+        df_badges = pd.DataFrame()
+
+    # Filter data by section scope
+    if assigned_section != "ALL":
+        if not df_pulse.empty and "Class/Section" in df_pulse.columns:
             df_pulse = df_pulse[df_pulse["Class/Section"] == assigned_section]
+        if not df_badges.empty and "Class/Section" in df_badges.columns:
+            df_badges = df_badges[df_badges["Class/Section"] == assigned_section]
 
     st.title(f"🏫 Classroom Wellbeing Overview: {assigned_section}")
-    st.caption("Real-time emotional climate, peer support dynamics, and intervention alerts.")
+    st.caption("Real-time emotional climate, student check-ins, kindness badge log, and support alerts.")
 
-    # --- TOP LEVEL METRICS ---
+    # --- TOP METRICS ---
     col_m1, col_m2, col_m3, col_m4 = st.columns(4)
     
-    total_submissions = len(df_pulse) if not df_pulse.empty else 0
+    total_pulse = len(df_pulse) if not df_pulse.empty else 0
+    total_badges = len(df_badges) if not df_badges.empty else 0
     overwhelmed_count = len(df_pulse[df_pulse['Mood'].str.contains("Overwhelmed", na=False)]) if not df_pulse.empty else 0
     counselor_req_count = len(df_pulse[df_pulse['Clean_Counselor_Request'].str.strip() != ""]) if not df_pulse.empty else 0
     
-    # Isolated peers count
-    isolated_list = df_pulse['Isolated Peer'].dropna().astype(str).str.strip() if not df_pulse.empty else pd.Series()
-    isolated_list = isolated_list[isolated_list != ""]
-    
-    col_m1.metric("Total Check-Ins", total_submissions)
-    col_m2.metric("Overwhelmed Students", overwhelmed_count, delta_color="inverse")
-    col_m3.metric("Counselor Requests", counselor_req_count)
-    col_m4.metric("Isolated Peers Flagged", len(isolated_list))
+    col_m1.metric("💬 Pulse Check-Ins", total_pulse)
+    col_m2.metric("🏅 Badges Awarded", total_badges)
+    col_m3.metric("🌧️ Overwhelmed Students", overwhelmed_count)
+    col_m4.metric("🕊️ Counselor Requests", counselor_req_count)
 
     st.markdown("---")
 
-    # --- DECISION SUPPORT & IMMEDIATE RISK ALERTS ---
-    st.subheader("🚨 Priority Action & Support Center")
-    
+    # --- PRIORITY RISK ALERT BANNER ---
     if not df_pulse.empty:
-        # High Priority: Overwhelmed OR Requested Counselor
         high_risk = df_pulse[
             (df_pulse['Mood'].str.contains("Overwhelmed", na=False)) | 
             (df_pulse['Clean_Counselor_Request'].str.strip() != "")
@@ -164,109 +157,130 @@ else:
         if not high_risk.empty:
             st.markdown(f"""
                 <div class="alert-high">
-                    <b>⚠️ Attention Needed:</b> {len(high_risk)} student submission(s) indicate emotional distress or request guidance support.
+                    <b>⚠️ Priority Support Needed:</b> {len(high_risk)} student entry/entries indicate distress or requested a private chat.
                 </div>
             """, unsafe_allow_html=True)
             
-            with st.expander("View High-Priority Student List", expanded=True):
+            with st.expander("🚨 View High-Priority Support Requests", expanded=False):
                 st.dataframe(
                     high_risk[["Timestamp", "Class/Section", "Student LRN", "Mood", "Clean_Counselor_Request"]],
                     use_container_width=True
                 )
-        else:
-            st.success("✅ No critical distress alerts or pending counselor requests in this view.")
 
-    # --- MAIN NAVIGATION TABS ---
+    # --- DASHBOARD NAVIGATION TABS ---
     if role == "Counselor":
-        tab1, tab2, tab3, tab4 = st.tabs(["📈 Mood Visualizations", "🫂 Peer Inclusion Watchlist", "📋 Full Logs", "⚙️ PIN Manager"])
+        tab_mood, tab_pulse, tab_badges, tab_peer, tab_pin = st.tabs([
+            "📈 Mood Visualizations", 
+            "💬 Pulse Check-Ins", 
+            "🏅 Kindness Badges", 
+            "🫂 Peer Inclusion Watchlist", 
+            "⚙️ PIN Manager"
+        ])
     else:
-        tab1, tab2, tab3 = st.tabs(["📈 Mood Visualizations", "🫂 Peer Inclusion Watchlist", "📋 Full Logs"])
+        tab_mood, tab_pulse, tab_badges, tab_peer = st.tabs([
+            "📈 Mood Visualizations", 
+            "💬 Pulse Check-Ins", 
+            "🏅 Kindness Badges", 
+            "🫂 Peer Inclusion Watchlist"
+        ])
 
-    # TAB 1: VISUAL ANALYTICS
-    with tab1:
-        st.subheader("📊 Emotional Climate Analytics")
-        col_chart1, col_chart2 = st.columns(2)
-        
+    # TAB 1: MOOD VISUALIZATIONS
+    with tab_mood:
+        st.subheader("📈 Classroom Emotional Climate")
         if not df_pulse.empty and "Mood" in df_pulse.columns:
+            col_chart1, col_chart2 = st.columns(2)
+            mood_counts = df_pulse['Mood'].value_counts().reset_index()
+            mood_counts.columns = ['Mood', 'Count']
+            
             with col_chart1:
-                st.markdown("##### Mood Distribution")
-                mood_counts = df_pulse['Mood'].value_counts().reset_index()
-                mood_counts.columns = ['Mood', 'Count']
-                
                 fig_bar = px.bar(
-                    mood_counts, 
-                    x='Mood', 
-                    y='Count', 
-                    color='Mood',
-                    title="Student Self-Reported Moods",
+                    mood_counts, x='Mood', y='Count', color='Mood',
+                    title="Student Mood Counts",
                     color_discrete_sequence=px.colors.qualitative.Pastel
                 )
                 fig_bar.update_layout(showlegend=False)
                 st.plotly_chart(fig_bar, use_container_width=True)
                 
             with col_chart2:
-                st.markdown("##### Emotional Breakdown Share")
                 fig_pie = px.pie(
-                    mood_counts, 
-                    names='Mood', 
-                    values='Count', 
-                    hole=0.4,
+                    mood_counts, names='Mood', values='Count', hole=0.4,
+                    title="Mood Share Breakdown",
                     color_discrete_sequence=px.colors.qualitative.Set3
                 )
                 st.plotly_chart(fig_pie, use_container_width=True)
         else:
-            st.info("No mood data available yet to display graphs.")
+            st.info("No student check-in data available yet for graphs.")
 
-    # TAB 2: PEER INCLUSION & ISOLATION WATCHLIST
-    with tab2:
-        st.subheader("🫂 Classroom Social Health & Isolation Watchlist")
-        st.caption("Students listed here were identified by classmates as quiet, overwhelmed, or left out.")
+    # TAB 2: PULSE CHECK-INS LOG
+    with tab_pulse:
+        st.subheader("💬 Confidential Student Pulse Check-Ins")
+        if not df_pulse.empty:
+            display_cols = ["Timestamp", "Class/Section", "Student LRN", "Mood", "Kind Peer", "Preferred Groupmate", "Isolated Peer", "Clean_Counselor_Request"]
+            available_cols = [c for c in display_cols if c in df_pulse.columns]
+            
+            st.dataframe(df_pulse[available_cols], use_container_width=True)
+            
+            csv_pulse = df_pulse.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Export Pulse Check-Ins (CSV)", data=csv_pulse, file_name=f"pulse_checkins_{assigned_section}.csv", mime="text/csv")
+        else:
+            st.info("No pulse check-in entries found for this section yet.")
+
+    # TAB 3: KINDNESS BADGES LOG
+    with tab_badges:
+        st.subheader("🏅 Peer Kindness Badges Log")
+        if not df_badges.empty:
+            st.dataframe(df_badges, use_container_width=True)
+            
+            csv_badges = df_badges.to_csv(index=False).encode('utf-8')
+            st.download_button("📥 Export Kindness Badges (CSV)", data=csv_badges, file_name=f"kindness_badges_{assigned_section}.csv", mime="text/csv")
+        else:
+            st.info("No kindness badges sent in this section yet.")
+
+    # TAB 4: PEER INCLUSION WATCHLIST
+    with tab_peer:
+        st.subheader("🫂 Peer Inclusion & Social Health Watchlist")
+        st.caption("Students identified by peers as quiet, overwhelmed, or left out.")
 
         if not df_pulse.empty and "Isolated Peer" in df_pulse.columns:
-            isolated_df = df_pulse[df_pulse['Isolated Peer'].astype(str).str.strip() != ""][["Timestamp", "Class/Section", "Isolated Peer", "Kind Peer", "Preferred Groupmate"]]
+            isolated_df = df_pulse[df_pulse['Isolated Peer'].astype(str).str.strip() != ""]
             
             if not isolated_df.empty:
                 st.markdown("""
                     <div class="alert-watch">
-                        <b>💡 Advisory Action:</b> Consider pairing students flagged as quiet/left out with nominated 'Kind Peers' or preferred groupmates during class activities.
+                        <b>💡 Teacher Guidance:</b> Consider quietly pairing students flagged in this list with nominated 'Kind Peers' or preferred partners during classwork.
                     </div>
                 """, unsafe_allow_html=True)
                 
-                st.dataframe(isolated_df, use_container_width=True)
+                show_cols = [c for c in ["Timestamp", "Class/Section", "Isolated Peer", "Kind Peer", "Preferred Groupmate"] if c in isolated_df.columns]
+                st.dataframe(isolated_df[show_cols], use_container_width=True)
             else:
-                st.info("No students have been flagged as left out or quiet by peers yet.")
+                st.info("No students flagged by peers in this section yet.")
         else:
-            st.info("No isolation data recorded yet.")
+            st.info("No peer isolation data available.")
 
-    # TAB 3: FULL LOGS
-    with tab3:
-        st.subheader("📋 Complete Pulse Check-In Records")
-        if not df_pulse.empty:
-            st.dataframe(df_pulse[["Timestamp", "Class/Section", "Student LRN", "Mood", "Kind Peer", "Preferred Groupmate", "Isolated Peer", "Clean_Counselor_Request"]], use_container_width=True)
-            
-            csv = df_pulse.to_csv(index=False).encode('utf-8')
-            st.download_button("📥 Export Records (CSV)", data=csv, file_name="student_pulse_records.csv", mime="text/csv")
-        else:
-            st.info("No records found.")
-
-    # TAB 4: COUNSELOR PIN MANAGEMENT
+    # TAB 5: COUNSELOR PIN MANAGEMENT
     if role == "Counselor":
-        with tab4:
+        with tab_pin:
             st.subheader("⚙️ Manage Sections & Access PINs")
             pin_df = load_pin_config()
 
             with st.form("add_sec_form", clear_on_submit=True):
+                st.write("➕ **Add New Class Section**")
                 col_a, col_b, col_c = st.columns(3)
-                nsec = col_a.text_input("Section Name")
-                spin = col_b.text_input("Student PIN")
-                tpin = col_c.text_input("Teacher PIN")
+                nsec = col_a.text_input("Section Name", placeholder="10 - Emerald")
+                spin = col_b.text_input("Student PIN", placeholder="1001")
+                tpin = col_c.text_input("Teacher PIN", placeholder="EMERALD2026")
                 
-                if st.form_submit_button("Save Section"):
-                    if nsec and spin and tpin:
+                if st.form_submit_button("Save Section & PINs"):
+                    if nsec.strip() and spin.strip() and tpin.strip():
                         ws_c = sh.worksheet("Class Configuration")
                         ws_c.append_row([nsec.strip(), spin.strip(), tpin.strip()])
                         st.cache_data.clear()
-                        st.success("Section added!")
+                        st.success(f"Added section {nsec} successfully!")
                         st.rerun()
+                    else:
+                        st.error("Please fill in all fields.")
 
+            st.markdown("---")
+            st.write("📋 **Active Class PIN Configurations**")
             st.dataframe(pin_df, use_container_width=True)
