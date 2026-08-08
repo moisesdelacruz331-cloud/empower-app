@@ -154,7 +154,7 @@ except Exception:
 col_logo, col_title = st.columns([1, 4])
 
 with col_logo:
-    st.image("fatimanhslogo.jpg", width=90)
+    st.image("fatimanhslogo.png", width=90)
 
 with col_title:
     st.markdown("## 🌱 EMPOWER Safe Space")
