@@ -10,7 +10,7 @@ import streamlit as st
 
 # Page Configuration
 st.set_page_config(
-    page_title="EMPOWER Teacher & Counselor Portal", page_icon="📊", layout="wide"
+    page_title="EMPOWER Staff Portal", page_icon="📊", layout="wide"
 )
 
 SALT_KEY = st.secrets.get("SALT_KEY", "EMPOWER_2026_SECURE_SALT")
@@ -18,6 +18,7 @@ SALT_KEY = st.secrets.get("SALT_KEY", "EMPOWER_2026_SECURE_SALT")
 
 # --- ANONYMIZATION UTILITIES ---
 def generate_anonymous_id(raw_id: str, salt: str = SALT_KEY) -> str:
+    """Generates the salted SHA-256 token for student check-ins."""
     if not raw_id or str(raw_id).strip() == "":
         return ""
     clean_id = str(raw_id).strip()
@@ -26,10 +27,18 @@ def generate_anonymous_id(raw_id: str, salt: str = SALT_KEY) -> str:
     return f"STU-{hash_digest[:4].upper()}"
 
 
-# Styling
+# Custom Styling
 st.markdown(
     """
     <style>
+    .role-badge {
+        background-color: #3B82F6;
+        color: white;
+        padding: 4px 12px;
+        border-radius: 12px;
+        font-weight: bold;
+        font-size: 14px;
+    }
     .alert-high {
         background-color: #FEF2F2;
         border-left: 5px solid #EF4444;
@@ -44,25 +53,33 @@ st.markdown(
         border-radius: 8px;
         margin-bottom: 16px;
     }
+    .guidance-box {
+        background-color: #F0FDF4;
+        border-left: 5px solid #10B981;
+        padding: 12px 16px;
+        border-radius: 8px;
+        margin-top: 12px;
+        margin-bottom: 16px;
+    }
     </style>
 """,
     unsafe_allow_html=True,
 )
 
 
-# --- 3. ANTI-PRANK & ANOMALY FILTERING PIPELINE ---
+# --- ANTI-PRANK & ANOMALY FILTERING PIPELINE ---
 def clean_pulse_data(df_pulse: pd.DataFrame) -> pd.DataFrame:
-    """Pre-cleaning pipeline to filter out trolling, duplicate submissions, and self-nominations."""
+    """Pre-cleaning pipeline: Deduplicates per date & strips self-nominations."""
     if df_pulse.empty:
         return df_pulse
 
     df_clean = df_pulse.copy()
 
-    # Ensure Timestamp ordering and keep only latest submission per student
     if "Timestamp" in df_clean.columns and "Student LRN" in df_clean.columns:
         df_clean["Timestamp"] = pd.to_datetime(
             df_clean["Timestamp"], errors="coerce"
         )
+        # Keep latest submission per student
         df_clean = (
             df_clean.sort_values("Timestamp")
             .groupby("Student LRN")
@@ -70,13 +87,12 @@ def clean_pulse_data(df_pulse: pd.DataFrame) -> pd.DataFrame:
             .reset_index()
         )
 
-    # Sanitize self-nominations
+    # Strip self-nominations
     if "Kind Peer" in df_clean.columns:
         df_clean["Kind Peer"] = df_clean.apply(
             lambda r: (
                 ""
-                if str(r["Student LRN"]).strip()
-                == str(r["Kind Peer"]).strip()
+                if str(r["Student LRN"]).strip() == str(r["Kind Peer"]).strip()
                 else r["Kind Peer"]
             ),
             axis=1,
@@ -96,15 +112,15 @@ def clean_pulse_data(df_pulse: pd.DataFrame) -> pd.DataFrame:
     return df_clean
 
 
-# --- 1 & 2. SOCIOGRAM ANALYTICS (DUAL-FILTER ANCHORS & ABSENTEEISM MASKING) ---
+# --- SOCIOGRAM & DUAL-FILTER ANCHORS ---
 def render_sociogram_analytics(
     df_pulse, df_badges, section_roster=None, section_label="Active View"
 ):
-    """Calculates network graph, masks absent students, and applies dual-filter peer anchor logic."""
+    """Calculates network centrality, masks absent students, and flags dual-filter anchors."""
     df_clean = clean_pulse_data(df_pulse)
 
     if df_clean.empty:
-        st.info(f"No valid check-in data available for {section_label}.")
+        st.info(f"No check-in data available for {section_label}.")
         return []
 
     G = nx.DiGraph()
@@ -126,7 +142,7 @@ def render_sociogram_analytics(
                 G.add_edge(sender, preferred_peer, relation="Preferred Partner")
 
     if G.number_of_nodes() == 0:
-        st.info(f"Insufficient network data for {section_label}.")
+        st.info(f"Insufficient peer nomination data for {section_label}.")
         return []
 
     in_degree = dict(G.in_degree())
@@ -137,22 +153,23 @@ def render_sociogram_analytics(
         else {node: 0.0 for node in G.nodes()}
     )
 
-    # 2. ACTIVE ABSENTEEISM DATA MASKING
-    present_students = set(df_clean["Student LRN"].astype(str).str.strip().unique())
+    # Active Absenteeism Data Masking
+    present_students = set(
+        df_clean["Student LRN"].astype(str).str.strip().unique()
+    )
     if section_roster and len(section_roster) > 0:
         full_roster = set([str(x).strip() for x in section_roster])
         absent_students = full_roster - present_students
     else:
         absent_students = set()
 
-    # Filter isolated nodes: degree 0 AND not marked absent
     isolated_nodes = [
         node
         for node, deg in in_degree.items()
         if deg == 0 and node not in absent_students
     ]
 
-    # 1. DUAL-FILTER PEER ANCHOR LOGIC
+    # Dual-Filter Peer Anchor Logic
     badge_counts = {}
     if not df_badges.empty and "Recipient LRN" in df_badges.columns:
         badge_counts = (
@@ -163,9 +180,7 @@ def render_sociogram_analytics(
             .to_dict()
         )
 
-    badge_median = (
-        np.median(list(badge_counts.values())) if badge_counts else 0
-    )
+    badge_median = np.median(list(badge_counts.values())) if badge_counts else 0
     centrality_threshold = (
         np.median(list(centrality.values())) if centrality else 0
     )
@@ -174,10 +189,14 @@ def render_sociogram_analytics(
     for node, deg in in_degree.items():
         earned_badges = badge_counts.get(node, 0)
         c_val = centrality.get(node, 0)
-        if c_val >= centrality_threshold and earned_badges >= badge_median and deg > 0:
+        if (
+            c_val >= centrality_threshold
+            and earned_badges >= badge_median
+            and deg > 0
+        ):
             eligible_anchors.append(node)
 
-    # Plot Layout
+    # Render Graph
     pos = nx.spring_layout(G, k=0.6, seed=42)
     edge_x, edge_y = [], []
     for edge in G.edges():
@@ -187,10 +206,21 @@ def render_sociogram_analytics(
         edge_y.extend([y0, y1, None])
 
     edge_trace = go.Scatter(
-        x=edge_x, y=edge_y, line=dict(width=1.2, color="#CBD5E1"), hoverinfo="none", mode="lines"
+        x=edge_x,
+        y=edge_y,
+        line=dict(width=1.2, color="#CBD5E1"),
+        hoverinfo="none",
+        mode="lines",
     )
 
-    node_x, node_y, node_colors, node_sizes, node_labels, node_hover = [], [], [], [], [], []
+    node_x, node_y, node_colors, node_sizes, node_labels, node_hover = (
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+    )
     for node in G.nodes():
         x, y = pos[node]
         node_x.append(x)
@@ -201,7 +231,7 @@ def render_sociogram_analytics(
             node_colors.append("#EF4444")
             node_sizes.append(22)
         elif node in eligible_anchors:
-            node_colors.append("#3B82F6")  # Blue for Dual-Filter Peer Anchors
+            node_colors.append("#3B82F6")
             node_sizes.append(24)
         else:
             node_colors.append("#10B981")
@@ -212,67 +242,211 @@ def render_sociogram_analytics(
             f"<b>Student ID:</b> {node}<br>"
             f"<b>Nominations Received:</b> {deg}<br>"
             f"<b>Badges Earned:</b> {badge_counts.get(node, 0)}<br>"
-            f"<b>Status:</b> {'Dual-Filter Peer Anchor' if node in eligible_anchors else 'Isolated' if node in isolated_nodes else 'Standard'}"
+            f"<b>Status:</b> {'Dual-Filter Peer Anchor' if node in eligible_anchors else 'Isolated (Present)' if node in isolated_nodes else 'Standard'}"
         )
 
     node_trace = go.Scatter(
-        x=node_x, y=node_y, mode="markers+text", hoverinfo="text",
-        text=node_labels, textposition="top center", hovertext=node_hover,
-        marker=dict(color=node_colors, size=node_sizes, line=dict(width=2, color="#FFFFFF"))
+        x=node_x,
+        y=node_y,
+        mode="markers+text",
+        hoverinfo="text",
+        text=node_labels,
+        textposition="top center",
+        hovertext=node_hover,
+        marker=dict(
+            color=node_colors, size=node_sizes, line=dict(width=2, color="#FFFFFF")
+        ),
     )
 
     fig = go.Figure(data=[edge_trace, node_trace])
     fig.update_layout(
         title=f"<b>Sociogram Network — Section: {section_label}</b>",
-        showlegend=False, margin=dict(b=20, l=10, r=10, t=50),
+        showlegend=False,
+        margin=dict(b=20, l=10, r=10, t=50),
         xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
         yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)"
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # Key Display
-    col_k1, col_k2, col_k3, col_k4 = st.columns(4)
-    col_k1.markdown("🔴 **Red:** Isolated (Present, 0 Nominations)")
-    col_k2.markdown("🔵 **Blue:** Qualified Peer Anchor (Centrality + Badges)")
-    col_k3.markdown("🟢 **Green:** Connected Peer")
-    col_k4.markdown(f"⚪ **Masked Absentees:** {len(absent_students)}")
-
+    # Detailed Interpretation and Action Guidance
     st.markdown("---")
-    st.subheader(f"💡 Real-Time Sociogram Analysis ({section_label})")
+    st.markdown(f"#### 💡 Sociogram Interpretation & Action Plan ({section_label})")
 
     col_m1, col_m2, col_m3 = st.columns(3)
-    col_m1.metric("Section Inclusion Rate", f"{((n_nodes - len(isolated_nodes)) / n_nodes * 100):.1f}%")
-    col_m2.metric("Dual-Filter Peer Anchors", f"{len(eligible_anchors)} identified", f"{', '.join(eligible_anchors[:2]) if eligible_anchors else 'None'}")
-    col_m3.metric("Verified Isolated Students", f"{len(isolated_nodes)}")
+    col_m1.metric(
+        "Section Inclusion Rate",
+        f"{((n_nodes - len(isolated_nodes)) / n_nodes * 100):.1f}%",
+    )
+    col_m2.metric(
+        "Dual-Filter Peer Anchors",
+        f"{len(eligible_anchors)} identified",
+        f"{', '.join(eligible_anchors[:2]) if eligible_anchors else 'None'}",
+    )
+    col_m3.metric(
+        "Verified Isolated Students",
+        f"{len(isolated_nodes)} of {n_nodes} present",
+    )
+
+    st.markdown(f"""
+    <div class="guidance-box">
+        <b>What This Graph Implies:</b><br>
+        * <b>🔴 Red Nodes ({len(isolated_nodes)}):</b> Students who were present during check-in but received zero peer nominations for group work or kindness. They are at immediate risk of social exclusion.<br>
+        * <b>🔵 Blue Nodes ({len(eligible_anchors)}):</b> Validated Peer Anchors who hold both high network centrality AND have earned above-average kindness badges. They demonstrate high social influence and prosocial leadership.<br>
+        * <b>⚪ Masked Absentees ({len(absent_students)}):</b> Filtered out from isolation alerts so absenteeism isn't misclassified as social exclusion.<br><br>
+        <b>Recommended Staff Action Items:</b><br>
+        1. <b>Eliminate Free Grouping:</b> Do not allow students to self-select group members, as this deepens isolated node exclusion.<br>
+        2. <b>Implement Peer-Shielding:</b> Quietly assign isolated students (🔴) into collaborative pairings with Dual-Filter Peer Anchors (🔵).<br>
+        3. <b>Observational Monitoring:</b> Monitor peer dynamics in groups to verify that blue-node anchors actively facilitate inclusion.
+    </div>
+    """, unsafe_allow_html=True)
 
     return isolated_nodes
 
 
-# --- 4. IMPLEMENTATION FIDELITY RATE (IFR) TRACKER TOOL ---
+# --- IFR TRACKER TOOL ---
 def render_ifr_tracker():
-    """Renders the Implementation Fidelity Rate tracker to monitor teacher intervention adherence."""
+    """Renders the Implementation Fidelity Rate tracker with explicit pedagogical interpretations."""
     st.subheader("📐 Implementation Fidelity Rate ($IFR$) Tracker")
-    st.caption("Track pedagogical adherence to peer-shielding and deliberate grouping strategies.")
+    st.caption(
+        "Quantifies teacher adherence to deliberate grouping interventions and"
+        " peer-shielding protocols."
+    )
 
     col1, col2 = st.columns(2)
     with col1:
-        total_assigned = st.number_input("Total Assigned Group Activities", min_value=1, value=10, step=1)
-        correctly_paired = st.number_input("Correctly Paired/Shielded Activities", min_value=0, max_value=int(total_assigned), value=8, step=1)
+        total_assigned = st.number_input(
+            "Total Assigned Collaborative Group Activities:",
+            min_value=1,
+            value=10,
+            step=1,
+        )
+        correctly_paired = st.number_input(
+            "Activities with Correct Peer-Shielding Pairings:",
+            min_value=0,
+            max_value=int(total_assigned),
+            value=8,
+            step=1,
+        )
 
     ifr_value = (correctly_paired / total_assigned) * 100
 
-    st.markdown("### $IFR$ Benchmark Result")
+    st.markdown("##### Formula Implemented")
+    st.latex(
+        r"IFR = \left( \frac{\text{Correctly Paired"
+        r" Activities}}{\text{Total Assigned Activities}} \right) \times 100"
+    )
+
+    st.markdown("##### Benchmark Result")
     if ifr_value >= 85:
-        st.success(f"🟢 **IFR = {ifr_value:.1f}%** — Target Met (≥ 85%). High pairing fidelity.")
+        st.success(
+            f"🟢 **IFR = {ifr_value:.1f}%** — Target High Fidelity Met (≥ 85%)."
+        )
     else:
-        st.error(f"🔴 **IFR = {ifr_value:.1f}%** — Below Target (< 85%). Pairing protocols require adjustment.")
+        st.error(
+            f"🔴 **IFR = {ifr_value:.1f}%** — Below Target Threshold (< 85%)."
+        )
 
-    st.latex(r"IFR = \left( \frac{\text{Correctly Paired Activities}}{\text{Total Assigned Activities}} \right) \times 100")
+    st.markdown(f"""
+    <div class="guidance-box">
+        <b>What This Metric Implies:</b><br>
+        * High $IFR$ (≥ 85%) verifies that educators are consistently executing intervention strategies by pairing isolated students with designated peer anchors.<br>
+        * Low $IFR$ (< 85%) signals that unstructured student grouping or inconsistent pairing adherence is still occurring in the classroom.<br><br>
+        <b>Recommended Staff Action Items:</b><br>
+        1. <b>Maintain Pre-Designed Seating:</b> Prepare seating charts and group rosters ahead of time for all lab exercises and group projects.<br>
+        2. <b>Log Every Activity:</b> Record each collaborative group session to maintain real-time fidelity tracking.<br>
+        3. <b>Review Pairing Quality:</b> Ensure pairings prioritize pairing 🔴 isolated nodes with 🔵 peer anchors rather than simple random assignments.
+    </div>
+    """, unsafe_allow_html=True)
 
 
-# --- DATABASE & DATA LOADING ---
+# --- COUNSELOR DE-ANONYMIZATION MODULE ---
+def render_student_lookup_tool():
+    """De-anonymization tool restricted to Guidance Counselors."""
+    st.subheader("🔍 Confidential Student De-Anonymization Tool")
+    st.caption(
+        "Authorized Counselor Feature — Data Privacy Act of 2012 (RA 10173)"
+        " Compliant"
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        target_token = (
+            st.text_input(
+                "Enter Flagged Anonymous Token (e.g., STU-8A2F):",
+                placeholder="STU-8A2F",
+            )
+            .strip()
+            .upper()
+        )
+    with col2:
+        input_lrn = st.text_input(
+            "Verify Known Student LRN:", placeholder="e.g., 123456789012"
+        ).strip()
+
+    if input_lrn:
+        generated_token = generate_anonymous_id(input_lrn)
+        if target_token and generated_token == target_token:
+            st.success(
+                f"✅ **MATCH CONFIRMED:** LRN `{input_lrn}` maps to"
+                f" **{generated_token}**."
+            )
+        else:
+            st.info(f"LRN `{input_lrn}` generates token: **{generated_token}**")
+
+    st.markdown("---")
+    st.markdown("##### 📋 Batch Section Roster Resolver")
+    uploaded_file = st.file_uploader(
+        "Upload Class Roster CSV (Must include 'LRN' and 'Student Name')",
+        type=["csv"],
+    )
+
+    if uploaded_file is not None:
+        try:
+            roster_df = pd.read_csv(uploaded_file)
+            if "LRN" in roster_df.columns:
+                roster_df["LRN"] = roster_df["LRN"].astype(str).str.strip()
+                roster_df["Anonymous Token"] = roster_df["LRN"].apply(
+                    generate_anonymous_id
+                )
+
+                if target_token:
+                    matched = roster_df[
+                        roster_df["Anonymous Token"] == target_token
+                    ]
+                    if not matched.empty:
+                        info = matched.iloc[0]
+                        st.error(
+                            f"🚨 **MATCH FOUND FOR {target_token}:**\n\n"
+                            f"* **Student Name:** {info.get('Student Name', 'N/A')}\n"
+                            f"* **LRN:** {info.get('LRN')}"
+                        )
+                    else:
+                        st.warning(
+                            f"No match for **{target_token}** in this roster."
+                        )
+
+                with st.expander("View Full Section Mapping Roster"):
+                    st.dataframe(roster_df, use_container_width=True)
+            else:
+                st.error("CSV must contain an 'LRN' column.")
+        except Exception as e:
+            st.error(f"Error processing roster: {e}")
+
+    st.markdown(f"""
+    <div class="guidance-box">
+        <b>What This Tool Implies:</b><br>
+        * Converts anonymized high-risk flags back into student identity records within local counselor memory.<br><br>
+        <b>Counselor Protocol:</b><br>
+        1. <b>Confidential Consultation:</b> Initiate discreet 1-on-1 counseling intake sessions for verified high-priority tokens.<br>
+        2. <b>Non-Disclosure:</b> Maintain strict privacy under RA 10173; do not disclose de-anonymized records to non-authorized personnel.
+    </div>
+    """, unsafe_allow_html=True)
+
+
+# --- DATABASE CONNECTIONS ---
 @st.cache_resource
 def connect_to_gsheet():
     creds = dict(st.secrets["connections"]["gsheets"])
@@ -289,7 +463,9 @@ def load_pin_config():
         ws = sh.worksheet("Class Configuration")
         return pd.DataFrame(ws.get_all_records())
     except Exception:
-        return pd.DataFrame(columns=["Class/Section", "Student PIN", "Teacher PIN"])
+        return pd.DataFrame(
+            columns=["Class/Section", "Student PIN", "Teacher PIN"]
+        )
 
 
 def parse_mood_and_requests(df):
@@ -297,16 +473,27 @@ def parse_mood_and_requests(df):
         df["Mood"] = []
         df["Clean_Counselor_Request"] = []
         return df
+
     if "Counselor Request" in df.columns:
-        df["Mood"] = df["Counselor Request"].astype(str).str.extract(r"\[Mood:\s*([^\]]+)\]").fillna("🌱 Not Specified")
-        df["Clean_Counselor_Request"] = df["Counselor Request"].astype(str).str.replace(r"\[Mood:\s*([^\]]+)\]\s*", "", regex=True)
+        df["Mood"] = (
+            df["Counselor Request"]
+            .astype(str)
+            .str.extract(r"\[Mood:\s*([^\]]+)\]")
+            .fillna("🌱 Not Specified")
+        )
+        df["Clean_Counselor_Request"] = (
+            df["Counselor Request"]
+            .astype(str)
+            .str.replace(r"\[Mood:\s*([^\]]+)\]\s*", "", regex=True)
+        )
     else:
         df["Mood"] = "🌱 Not Specified"
         df["Clean_Counselor_Request"] = ""
+
     return df
 
 
-# --- AUTHENTICATION & APP LAYOUT ---
+# --- AUTHENTICATION ---
 if "auth_role" not in st.session_state:
     st.session_state.auth_role = None
     st.session_state.auth_section = None
@@ -316,10 +503,15 @@ if not st.session_state.auth_role:
     with col2:
         st.image("fatimanhslogo.png", width=80)
         st.title("🔒 EMPOWER Staff Portal")
-        login_pin = st.text_input("Enter Teacher PIN / Passcode:", type="password").strip()
+        login_pin = st.text_input(
+            "Enter Staff Passcode / Teacher PIN:", type="password"
+        ).strip()
 
         if st.button("Login to Dashboard"):
-            counselor_pass = str(st.secrets.get("ADMIN_PASSWORD", "COUNSELOR2026")).strip()
+            counselor_pass = str(
+                st.secrets.get("ADMIN_PASSWORD", "COUNSELOR2026")
+            ).strip()
+
             if login_pin == counselor_pass:
                 st.session_state.auth_role = "Counselor"
                 st.session_state.auth_section = "ALL"
@@ -327,26 +519,41 @@ if not st.session_state.auth_role:
             else:
                 pin_df = load_pin_config()
                 if not pin_df.empty and "Teacher PIN" in pin_df.columns:
-                    matched = pin_df[pin_df["Teacher PIN"].astype(str).str.strip() == login_pin]
+                    matched = pin_df[
+                        pin_df["Teacher PIN"].astype(str).str.strip()
+                        == login_pin
+                    ]
                     if not matched.empty:
                         st.session_state.auth_role = "Teacher"
-                        st.session_state.auth_section = matched.iloc[0]["Class/Section"]
+                        st.session_state.auth_section = matched.iloc[0][
+                            "Class/Section"
+                        ]
                         st.rerun()
                     else:
-                        st.error("Invalid Passcode.")
+                        st.error("Invalid Passcode or PIN.")
                 else:
                     st.error("Invalid Passcode.")
+
 else:
+    # --- MAIN APPLICATION DASHBOARD ---
     role = st.session_state.auth_role
     assigned_section = st.session_state.auth_section
 
-    st.sidebar.image("fatimanhslogo.png", width=100)
+    # Sidebar Navigation & Context
+    st.sidebar.image("fatimanhslogo.png", width=90)
     st.sidebar.title("📊 Staff Analytics")
+    st.sidebar.markdown(
+        f"**Active User Role:** <span class='role-badge'>{role}</span>",
+        unsafe_allow_html=True,
+    )
+
     sh = connect_to_gsheet()
 
     try:
         ws_pulse = sh.worksheet("Pulse Checkins")
-        df_pulse_raw = parse_mood_and_requests(pd.DataFrame(ws_pulse.get_all_records()))
+        df_pulse_raw = parse_mood_and_requests(
+            pd.DataFrame(ws_pulse.get_all_records())
+        )
     except Exception:
         df_pulse_raw = pd.DataFrame()
 
@@ -356,63 +563,315 @@ else:
     except Exception:
         df_badges_raw = pd.DataFrame()
 
-    # Apply global anti-prank cleaning
     df_pulse_clean = clean_pulse_data(df_pulse_raw)
-
     pin_df = load_pin_config()
+
+    # Scope Selection
     if role == "Counselor":
-        available_sections = sorted(list(set(df_pulse_clean["Class/Section"].dropna().astype(str).unique()))) if not df_pulse_clean.empty else []
-        selected_view_scope = st.sidebar.selectbox("🎯 Counselor View Scope:", options=["ALL"] + available_sections)
-        active_section_filter = selected_view_scope
+        available_sections = (
+            sorted(
+                list(
+                    set(
+                        df_pulse_clean["Class/Section"]
+                        .dropna()
+                        .astype(str)
+                        .unique()
+                    )
+                )
+            )
+            if not df_pulse_clean.empty
+            else []
+        )
+        selected_view_scope = st.sidebar.selectbox(
+            "🎯 Counselor View Scope:",
+            options=["ALL (Aggregated)"] + available_sections,
+        )
+        active_section_filter = (
+            "ALL"
+            if selected_view_scope == "ALL (Aggregated)"
+            else selected_view_scope
+        )
     else:
         active_section_filter = assigned_section
 
+    st.sidebar.write(f"Active Scope: **{active_section_filter}**")
+
     if st.sidebar.button("Logout"):
         st.session_state.auth_role = None
+        st.session_state.auth_section = None
         st.cache_data.clear()
         st.rerun()
 
-    # Filtered View Data
+    # Filter Datasets
     df_pulse = df_pulse_clean.copy()
     df_badges = df_badges_raw.copy()
+
     if active_section_filter != "ALL":
         if not df_pulse.empty and "Class/Section" in df_pulse.columns:
-            df_pulse = df_pulse[df_pulse["Class/Section"].astype(str).str.strip() == active_section_filter]
+            df_pulse = df_pulse[
+                df_pulse["Class/Section"].astype(str).str.strip()
+                == active_section_filter
+            ]
         if not df_badges.empty and "Class/Section" in df_badges.columns:
-            df_badges = df_badges[df_badges["Class/Section"].astype(str).str.strip() == active_section_filter]
+            df_badges = df_badges[
+                df_badges["Class/Section"].astype(str).str.strip()
+                == active_section_filter
+            ]
 
+    # App Header
     st.title(f"Classroom Wellbeing Overview: {active_section_filter}")
+    st.caption(
+        f"Logged in as: **{role}** | Real-time wellbeing tracking, anti-prank"
+        " filtered metrics, and action plans."
+    )
 
-    # Tabs Structure
-    tabs = ["📈 Mood Visualizations", "💬 Pulse Check-Ins", "🏅 Kindness Badges", "🫂 Peer Inclusion & Sociogram", "📐 IFR Tracker"]
+    # Top Key Metrics
+    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+    total_pulse = len(df_pulse) if not df_pulse.empty else 0
+    total_badges = len(df_badges) if not df_badges.empty else 0
+    overwhelmed_count = (
+        len(df_pulse[df_pulse["Mood"].str.contains("Overwhelmed", na=False)])
+        if not df_pulse.empty
+        else 0
+    )
+    counselor_req_count = (
+        len(df_pulse[df_pulse["Clean_Counselor_Request"].str.strip() != ""])
+        if not df_pulse.empty
+        else 0
+    )
+
+    col_m1.metric("💬 Pulse Check-Ins", total_pulse)
+    col_m2.metric("🏅 Badges Awarded", total_badges)
+    col_m3.metric("🌧️ Overwhelmed Students", overwhelmed_count)
+    col_m4.metric("🕊️ Counselor Requests", counselor_req_count)
+
+    st.markdown("---")
+
+    # Priority Support Banner & Interpretation
+    if not df_pulse.empty:
+        high_risk = df_pulse[
+            (df_pulse["Mood"].str.contains("Overwhelmed", na=False))
+            | (df_pulse["Clean_Counselor_Request"].str.strip() != "")
+        ]
+
+        if not high_risk.empty:
+            st.markdown(
+                f"""
+                <div class="alert-high">
+                    <b>🚨 Priority Support Alerts ({active_section_filter}):</b> {len(high_risk)} submission(s) indicate distress or direct counseling requests.
+                </div>
+            """,
+                unsafe_allow_html=True,
+            )
+
+            with st.expander(
+                "📋 Priority Support Log & Action Items", expanded=True
+            ):
+                st.dataframe(
+                    high_risk[
+                        [
+                            "Timestamp",
+                            "Class/Section",
+                            "Student LRN",
+                            "Mood",
+                            "Clean_Counselor_Request",
+                        ]
+                    ],
+                    use_container_width=True,
+                )
+
+                st.markdown(f"""
+                <div class="guidance-box">
+                    <b>What This Alert Implies:</b><br>
+                    * Identified students have explicitly selected high-stress mood markers or submitted private counselor notes.<br><br>
+                    <b>Recommended Action Plan:</b><br>
+                    * <b>Teacher Role:</b> Provide a supportive, low-pressure academic environment. Avoid singling students out publicly.<br>
+                    * <b>Counselor Role:</b> Utilize the De-Anonymization Tool to schedule confidential 1-on-1 intake interviews.
+                </div>
+                """, unsafe_allow_html=True)
+
+    # Dynamic Tabs Setup
+    tab_titles = [
+        "📈 Mood Visualizations",
+        "💬 Pulse Check-Ins",
+        "🏅 Kindness Badges",
+        "🫂 Peer Inclusion & Sociogram",
+        "📐 IFR Tracker",
+    ]
+
     if role == "Counselor":
-        tabs.extend(["🔍 Student De-Anonymization", "⚙️ PIN Manager"])
+        tab_titles.extend(["🔍 Student De-Anonymization", "⚙️ PIN Manager"])
 
-    tab_objects = st.tabs(tabs)
+    tabs = st.tabs(tab_titles)
 
-    with tab_objects[0]:
-        st.subheader("📈 Emotional Climate")
+    # TAB 1: MOOD VISUALIZATIONS
+    with tabs[0]:
+        st.subheader(
+            f"📈 Classroom Emotional Climate Breakdown ({active_section_filter})"
+        )
         if not df_pulse.empty and "Mood" in df_pulse.columns:
+            col_chart1, col_chart2 = st.columns(2)
             mood_counts = df_pulse["Mood"].value_counts().reset_index()
             mood_counts.columns = ["Mood", "Count"]
-            fig_bar = px.bar(mood_counts, x="Mood", y="Count", color="Mood")
-            st.plotly_chart(fig_bar, use_container_width=True)
 
-    with tab_objects[1]:
-        st.subheader("💬 Confidential Pulse Log")
-        st.dataframe(df_pulse, use_container_width=True)
+            with col_chart1:
+                fig_bar = px.bar(
+                    mood_counts,
+                    x="Mood",
+                    y="Count",
+                    color="Mood",
+                    title=f"Mood Counts - {active_section_filter}",
+                    color_discrete_sequence=px.colors.qualitative.Pastel,
+                )
+                fig_bar.update_layout(showlegend=False)
+                st.plotly_chart(fig_bar, use_container_width=True)
 
-    with tab_objects[2]:
-        st.subheader("🏅 Kindness Badges")
-        st.dataframe(df_badges, use_container_width=True)
+            with col_chart2:
+                fig_pie = px.pie(
+                    mood_counts,
+                    names="Mood",
+                    values="Count",
+                    hole=0.4,
+                    title=f"Mood Distribution - {active_section_filter}",
+                    color_discrete_sequence=px.colors.qualitative.Set3,
+                )
+                st.plotly_chart(fig_pie, use_container_width=True)
 
-    with tab_objects[3]:
-        st.subheader("🫂 Peer Inclusion & Sociometric Analytics")
-        # Optional Roster Input for Absenteeism Masking
-        roster_input = st.text_area("Optional Section Roster LRNs (Comma-separated for absenteeism masking):", value="")
-        roster_list = [x.strip() for x in roster_input.split(",") if x.strip()] if roster_input else None
+            st.markdown(f"""
+            <div class="guidance-box">
+                <b>What This Chart Implies:</b><br>
+                * Visualizes overall emotional health distribution across {active_section_filter}. A higher proportion of overwhelmed/anxious moods signals potential academic or social burnout.<br><br>
+                <b>Recommended Action Items:</b><br>
+                1. <b>Adjust Class Pacing:</b> If 'Overwhelmed' exceeds 25%, evaluate major project deadlines and incorporate short mental breaks.<br>
+                2. <b>Classroom Check-Ins:</b> Facilitate brief morning grounding exercises before starting complex lessons.
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.info("No mood check-in data available yet.")
 
-        render_sociogram_analytics(df_pulse, df_badges, section_roster=roster_list, section_label=active_section_filter)
+    # TAB 2: PULSE CHECK-INS LOG TABLE
+    with tabs[1]:
+        st.subheader(
+            f"💬 Confidential Student Pulse Check-Ins ({active_section_filter})"
+        )
+        if not df_pulse.empty:
+            display_cols = [
+                "Timestamp",
+                "Class/Section",
+                "Student LRN",
+                "Mood",
+                "Kind Peer",
+                "Preferred Groupmate",
+                "Clean_Counselor_Request",
+            ]
+            avail_cols = [c for c in display_cols if c in df_pulse.columns]
 
-    with tab_objects[4]:
+            st.dataframe(df_pulse[avail_cols], use_container_width=True)
+
+            st.markdown(f"""
+            <div class="guidance-box">
+                <b>What This Table Implies:</b><br>
+                * Raw log of deduplicated student check-ins containing mood ratings, peer nominations, and support notes.<br><br>
+                <b>Recommended Action Items:</b><br>
+                1. <b>Review Counselor Notes:</b> Scan the 'Clean_Counselor_Request' column for explicit support messages.<br>
+                2. <b>Verify Data Freshness:</b> Encourage students to log check-ins weekly to keep wellbeing metrics current.
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.info("No pulse check-in records available.")
+
+    # TAB 3: KINDNESS BADGES TABLE
+    with tabs[2]:
+        st.subheader(f"🏅 Peer Kindness Badges Log ({active_section_filter})")
+        if not df_badges.empty:
+            st.dataframe(df_badges, use_container_width=True)
+
+            st.markdown(f"""
+            <div class="guidance-box">
+                <b>What This Table Implies:</b><br>
+                * Tracks prosocial peer recognitions. Identifies students actively generating positive peer connections.<br><br>
+                <b>Recommended Action Items:</b><br>
+                1. <b>Recognize Peer Anchors:</b> Acknowledge top badge earners publicly to reinforce prosocial classroom behavior.<br>
+                2. <b>Support Low-Badge Recipients:</b> Integrate students with zero earned badges into collaborative tasks with active badge senders.
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.info("No kindness badges sent yet.")
+
+    # TAB 4: SOCIOGRAM ANALYTICS & PEER INCLUSION
+    with tabs[3]:
+        st.subheader("🫂 Peer Inclusion & Sociogram Analytics")
+        roster_input = st.text_area(
+            "Optional Section Roster LRNs (Comma-separated for absenteeism"
+            " masking):",
+            value="",
+        )
+        roster_list = (
+            [x.strip() for x in roster_input.split(",") if x.strip()]
+            if roster_input
+            else None
+        )
+
+        render_sociogram_analytics(
+            df_pulse,
+            df_badges,
+            section_roster=roster_list,
+            section_label=active_section_filter,
+        )
+
+    # TAB 5: IFR TRACKER TOOL
+    with tabs[4]:
         render_ifr_tracker()
+
+    # COUNSELOR-ONLY TABS
+    if role == "Counselor":
+        # TAB 6: DE-ANONYMIZATION TOOL
+        with tabs[5]:
+            render_student_lookup_tool()
+
+        # TAB 7: PIN MANAGER
+        with tabs[6]:
+            st.subheader("⚙️ Manage Class Sections & Access PINs")
+            st.caption(
+                "Counselor Administrator Tool for class onboardings and PIN"
+                " rotations."
+            )
+
+            pin_df = load_pin_config()
+
+            with st.form("add_section_form", clear_on_submit=True):
+                st.write("➕ **Add / Register New Class Section**")
+                col_a, col_b, col_c = st.columns(3)
+                nsec = col_a.text_input(
+                    "Section Name", placeholder="e.g., 10 - Emerald"
+                )
+                spin = col_b.text_input("Student PIN", placeholder="e.g., 1001")
+                tpin = col_c.text_input(
+                    "Teacher PIN", placeholder="e.g., EMERALD2026"
+                )
+
+                if st.form_submit_button("Save Section Configuration"):
+                    if nsec.strip() and spin.strip() and tpin.strip():
+                        ws_c = sh.worksheet("Class Configuration")
+                        ws_c.append_row(
+                            [nsec.strip(), spin.strip(), tpin.strip()]
+                        )
+                        st.cache_data.clear()
+                        st.success(f"Registered section '{nsec}' successfully!")
+                        st.rerun()
+                    else:
+                        st.error("Please fill out all section fields.")
+
+            st.markdown("---")
+            st.write("📋 **Registered Class Section Credentials**")
+            st.dataframe(pin_df, use_container_width=True)
+
+            st.markdown(f"""
+            <div class="guidance-box">
+                <b>What This Tool Implies:</b><br>
+                * Configures active classroom section access credentials for advisory teachers and students.<br><br>
+                <b>Counselor Action Items:</b><br>
+                1. <b>Credential Distribution:</b> Issue designated Teacher PINs to respective advisory teachers.<br>
+                2. <b>Security Audits:</b> Periodically update PIN configurations to prevent unauthorized access.
+            </div>
+            """, unsafe_allow_html=True)
