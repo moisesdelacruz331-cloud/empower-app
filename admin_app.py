@@ -37,7 +37,6 @@ st.markdown(
 # --- SOCIOMETRIC GRAPH ANALYSIS MODULE ---
 def render_sociogram_analytics(df_pulse):
     """Generates an interactive Plotly sociogram network graph from peer nominations
-
     and identifies structurally isolated nodes (students receiving 0 nominations).
     """
     if df_pulse.empty:
@@ -129,7 +128,7 @@ def render_sociogram_analytics(df_pulse):
         node_labels.append(str(node))
         node_hover.append(
             f"<b>Student Identifier:</b> {node}<br>"
-            f"<b>Nominations Received ($deg^-$):</b> {deg}<br>"
+            f"<b>Nominations Received ($deg^- $):</b> {deg}<br>"
             f"<b>In-Degree Centrality ($C_d$):</b> {c_d:.3f}"
         )
 
@@ -148,20 +147,20 @@ def render_sociogram_analytics(df_pulse):
         ),
     )
 
-    # Render Plotly Figure
-    fig = go.Figure(
-        data=[edge_trace, node_trace],
-        layout=go.Layout(
-            title="<b>Classroom Sociogram: Peer Inclusion & Isolation Network</b>",
-            titlefont=dict(size=16),
-            showlegend=False,
-            hovermode="closest",
-            margin=dict(b=20, l=10, r=10, t=50),
-            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
+    # Render Plotly Figure using updated cross-compatible layout syntax
+    fig = go.Figure(data=[edge_trace, node_trace])
+    fig.update_layout(
+        title=dict(
+            text="<b>Classroom Sociogram: Peer Inclusion & Isolation Network</b>",
+            font=dict(size=16),
         ),
+        showlegend=False,
+        hovermode="closest",
+        margin=dict(b=20, l=10, r=10, t=50),
+        xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
     )
 
     st.plotly_chart(fig, use_container_width=True)
