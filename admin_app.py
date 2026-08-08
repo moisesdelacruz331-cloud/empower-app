@@ -36,8 +36,9 @@ st.markdown(
 
 # --- SOCIOMETRIC GRAPH ANALYSIS MODULE ---
 def render_sociogram_analytics(df_pulse):
-    """Generates an interactive Plotly sociogram network graph from peer nominations
-    and identifies structurally isolated nodes (students receiving 0 nominations).
+    """Generates an interactive Plotly sociogram network graph from peer nominations,
+
+    identifies structurally isolated nodes, and provides real-time teacher interpretations.
     """
     if df_pulse.empty:
         st.info("No check-in data available to build network graph.")
@@ -147,7 +148,7 @@ def render_sociogram_analytics(df_pulse):
         ),
     )
 
-    # Render Plotly Figure using updated cross-compatible layout syntax
+    # Render Plotly Figure
     fig = go.Figure(data=[edge_trace, node_trace])
     fig.update_layout(
         title=dict(
@@ -165,8 +166,53 @@ def render_sociogram_analytics(df_pulse):
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # Return list of structurally isolated nodes (0 incoming nominations)
+    # Visual Legend & Quick Metrics
+    st.markdown("##### 🔑 Visual Key & Quick Indicators")
+    col_k1, col_k2, col_k3 = st.columns(3)
+    col_k1.markdown("🔴 **Red Node:** 0 nominations (At-risk / Isolated)")
+    col_k2.markdown(
+        "🟢 **Green Node:** Connected (Larger = Higher popularity)"
+    )
+    col_k3.markdown("🔗 **Gray Line:** Incoming peer nomination")
+
+    # Extract Key Analytical Insights
     isolated_nodes = [node for node, deg in in_degree.items() if deg == 0]
+    max_deg = max(in_degree.values()) if in_degree else 0
+    top_peers = [
+        node for node, deg in in_degree.items() if deg == max_deg and deg > 0
+    ]
+    inclusion_rate = (
+        ((n_nodes - len(isolated_nodes)) / n_nodes * 100) if n_nodes > 0 else 0
+    )
+
+    st.markdown("---")
+
+    # REAL-TIME INTERPRETATION BREAKDOWN FOR TEACHERS
+    st.subheader("💡 Real-Time Sociogram Interpretation")
+
+    col_m1, col_m2, col_m3 = st.columns(3)
+    col_m1.metric("Classroom Inclusion Rate", f"{inclusion_rate:.1f}%")
+    col_m2.metric(
+        "Top Connected Peer Anchor(s)",
+        f"{', '.join(top_peers) if top_peers else 'None'}",
+        f"{max_deg} nominations received",
+    )
+    col_m3.metric("Isolated Students", f"{len(isolated_nodes)} of {n_nodes}")
+
+    with st.expander(
+        "📖 **Teacher Guidance & Pedagogical Action Plan**", expanded=True
+    ):
+        st.markdown(f"""
+        * **Social Climate Summary:** **{inclusion_rate:.1f}%** of students in this section were nominated by at least one peer as a preferred groupmate or kind classmate.
+        * **Peer Anchors (Bridge Builders):** Student(s) **{', '.join(top_peers) if top_peers else 'None'}** hold the highest centrality. They are trusted by peers and can serve as positive group leaders.
+        * **Isolated Nodes:** Student(s) **{', '.join(isolated_nodes) if isolated_nodes else 'None'}** received zero nominations, putting them at structural risk for social isolation or low participation.
+
+        **Recommended Classroom Actions:**
+        1. **Avoid Unstructured Grouping:** Avoid asking students to "pick your own partners," as this deepens isolation for red-node students.
+        2. **Strategic Pairing:** Quietly group isolated students with central peer anchors (**{', '.join(top_peers[:2]) if top_peers else 'leaders'}**) during upcoming group activities to build inclusive social ties.
+        3. **Observation Check:** Check in privately with red-node students to evaluate their emotional comfort and integration in class.
+        """)
+
     return isolated_nodes
 
 
@@ -464,7 +510,7 @@ else:
             "Interactive network graph identifying peer centrality and structurally isolated students ($deg^- = 0$)."
         )
 
-        # Render Network Graph & Extract Isolated Identifiers
+        # Render Network Graph, Interpretation, & Extract Isolated Identifiers
         isolated_students = render_sociogram_analytics(df_pulse)
 
         if isolated_students:
@@ -476,9 +522,6 @@ else:
                 </div>
             """,
                 unsafe_allow_html=True,
-            )
-            st.info(
-                "<b>💡 Guidance Protocol:</b> Quietly pair these identified students with high-centrality 'Kind Peers' during collaborative classroom tasks."
             )
 
         st.markdown("---")
