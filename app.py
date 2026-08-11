@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, time
 import hashlib
 import re
 import gspread
@@ -9,6 +9,19 @@ import streamlit as st
 st.set_page_config(
     page_title="EMPOWER | Student Safe Haven", page_icon="🌱", layout="centered"
 )
+
+# --- HYBRID ROUTING & SYSTEM MODE DETECTION ---
+query_params = st.query_params
+APP_MODE = query_params.get("mode", "kiosk").lower()  # Options: 'kiosk' or 'qr'
+
+
+def is_off_hours() -> bool:
+    """Checks if current time is outside Mon-Fri 8:00 AM - 5:00 PM."""
+    now = datetime.now()
+    is_weekend = now.weekday() >= 5  # 5 = Sat, 6 = Sun
+    is_outside_work_hours = not (time(8, 0) <= now.time() <= time(17, 0))
+    return is_weekend or is_outside_work_hours
+
 
 # --- HIDE STREAMLIT BRANDING & UI ELEMENTS ---
 hide_streamlit_ui = """
@@ -63,7 +76,6 @@ MALICIOUS_INPUT_REGEX = (
 
 def generate_anonymous_id(raw_id: str, salt: str = SALT_KEY) -> str:
     """Converts a raw Learner Reference Number (LRN) or student identifier into a
-
     salted SHA-256 unique anonymous ID (e.g., STU-8A2F). Ensures raw identities
     are never stored in cloud databases.
     """
@@ -77,7 +89,6 @@ def generate_anonymous_id(raw_id: str, salt: str = SALT_KEY) -> str:
 
 def sanitize_input(text: str) -> str:
     """Filters profane language using regex and strips malicious injection vectors
-
     before persisting input to Google Sheets.
     """
     if not text or not isinstance(text, str):
@@ -309,7 +320,6 @@ def fetch_master_roster_df():
 
 def get_isolated_section_roster(assigned_section: str) -> dict:
     """Strictly filters the master roster down to ONLY the active assigned section.
-
     Maps plain student names to salted STU-XXXX tokens dynamically in memory.
     """
     df = fetch_master_roster_df()
@@ -336,6 +346,14 @@ try:
 except Exception:
     st.warning("🌱 Running in offline preview mode.")
 
+# --- OFF-HOURS CRISIS WARNING (PERSONAL DEVICE PATHWAY) ---
+if APP_MODE == "qr" and is_off_hours():
+    st.error(
+        "⚠️ **Off-Hours Notice:** Counselor monitoring is active **Mon–Fri, 8:00 AM–5:00 PM**. "
+        "If you or a classmate are experiencing an immediate crisis or physical danger, please contact "
+        "the **National Center for Mental Health Hotline at 1553** or **Hopeline PH at (02) 8893-7603**."
+    )
+
 # --- HEADER WITH SCHOOL LOGO & DAILY INSPIRATION ---
 col_logo, col_title = st.columns([1, 4])
 
@@ -344,7 +362,8 @@ with col_logo:
 
 with col_title:
     st.markdown("## 🌱 EMPOWER Safe Space")
-    st.caption("Fatima National High School | Guidance & Peer Support Hub")
+    mode_label = "Classroom Kiosk Mode" if APP_MODE == "kiosk" else "Confidential Device Portal"
+    st.caption(f"Fatima National High School | Guidance Hub ({mode_label})")
 
 st.markdown(
     f"""
@@ -411,6 +430,27 @@ if input_pin in student_pins:
             "Select classmate names easily from the dropdowns. Choices are automatically converted to anonymous tokens (STU-XXXX) before saving."
         )
 
+        # FAST KIOSK FEATURE: 1-Touch Counselor Request Button (For Phoneless Students)
+        if APP_MODE == "kiosk":
+            st.info("💡 **In-Class Kiosk Mode:** Need a private chat with the counselor without typing in line?")
+            if st.button("🙋 Touch to Request Private Counselor Session", use_container_width=True):
+                try:
+                    ws = sh.worksheet("Pulse Checkins")
+                    ws.append_row([
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        assigned_section,
+                        "STU-KIOSK-REQ",
+                        "",
+                        "",
+                        "",
+                        f"[Mood: {mood}] [Kiosk 1-Touch Request] Student requested 1-on-1 counselor visit.",
+                    ])
+                    st.success("✅ Your request has been logged privately with Guidance. Thank you!")
+                except Exception as e:
+                    st.error(f"Unable to process request: {e}")
+
+            st.divider()
+
         with st.form("pulse_form", clear_on_submit=True):
             if has_roster:
                 sender_name = st.selectbox(
@@ -459,6 +499,7 @@ if input_pin in student_pins:
 
             if submitted:
                 try:
+                    channel_tag = f"[{APP_MODE.upper()} Mode]"
                     if has_roster:
                         if sender_name == "-- Select Your Name --":
                             st.error("Please select your name before submitting.")
@@ -489,7 +530,7 @@ if input_pin in student_pins:
                                 anon_kind_peer,
                                 anon_groupmate,
                                 anon_isolated_peer,
-                                f"[Mood: {mood}] {clean_counselor_req}",
+                                f"{channel_tag} [Mood: {mood}] {clean_counselor_req}",
                             ])
                             st.success(
                                 f"💚 Thank you! Your reflection has been saved securely as **{anon_sender}**."
@@ -510,7 +551,7 @@ if input_pin in student_pins:
                                 anon_kind_peer,
                                 anon_groupmate,
                                 anon_isolated_peer,
-                                f"[Mood: {mood}] {clean_counselor_req}",
+                                f"{channel_tag} [Mood: {mood}] {clean_counselor_req}",
                             ])
                             st.success(
                                 f"💚 Reflection saved securely as **{anon_sender}**."
@@ -565,6 +606,7 @@ if input_pin in student_pins:
             if badge_submitted:
                 try:
                     clean_note = sanitize_input(note)
+                    channel_tag = f"[{APP_MODE.upper()} Mode]"
                     if has_roster:
                         if recipient_name == "-- Select Classmate --":
                             st.error("Please select a recipient from the list.")
@@ -576,7 +618,7 @@ if input_pin in student_pins:
                                 assigned_section,
                                 anon_recipient,
                                 badge_info["badge_tag"],
-                                clean_note,
+                                f"{channel_tag} {clean_note}".strip(),
                             ])
                             st.balloons()
                             st.success(
@@ -591,7 +633,7 @@ if input_pin in student_pins:
                                 assigned_section,
                                 anon_recipient,
                                 badge_info["badge_tag"],
-                                clean_note,
+                                f"{channel_tag} {clean_note}".strip(),
                             ])
                             st.balloons()
                             st.success(
