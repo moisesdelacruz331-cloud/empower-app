@@ -232,12 +232,24 @@ BADGE_DETAILS = {
     },
 }
 
-# --- CUSTOM APP STYLING ---
+# --- CUSTOM APP STYLING & DARK MODE TEXT OVERRIDES ---
 st.markdown(
     """
     <style>
+    /* Force light background */
     .stApp {
-        background: linear-gradient(180deg, #F4F8F7 0%, #EBF3F5 100%);
+        background: linear-gradient(180deg, #F4F8F7 0%, #EBF3F5 100%) !important;
+    }
+
+    /* OVERRIDE TEXT CONTRAST FOR DARK MODE DEVICES */
+    .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6 {
+        color: #1B4332 !important;
+    }
+    .stApp p, .stApp label, [data-testid="stMarkdownContainer"] p {
+        color: #2D3748 !important;
+    }
+    .stCaption, [data-testid="stCaptionContainer"] p {
+        color: #4A5568 !important;
     }
 
     .quote-box {
@@ -252,7 +264,7 @@ st.markdown(
     .privacy-badge {
         background-color: #EBF5EE;
         border: 1px solid #B8E0D2;
-        color: #2D6A4F;
+        color: #2D6A4F !important;
         padding: 10px 16px;
         border-radius: 12px;
         font-size: 0.88rem;
