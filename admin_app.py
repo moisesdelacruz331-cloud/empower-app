@@ -829,38 +829,98 @@ else:
         with tabs[5]:
             render_student_lookup_tool()
 
-        # TAB 7: PIN MANAGER
+     # TAB 7: PIN MANAGER
         with tabs[6]:
             st.subheader("⚙️ Manage Class Sections & Access PINs")
             st.caption(
-                "Counselor Administrator Tool for class onboardings and PIN"
-                " rotations."
+                "Counselor Administrator Tool for class onboardings, credential edits, and PIN rotations."
             )
 
             pin_df = load_pin_config()
 
-            with st.form("add_section_form", clear_on_submit=True):
-                st.write("➕ **Add / Register New Class Section**")
-                col_a, col_b, col_c = st.columns(3)
-                nsec = col_a.text_input(
-                    "Section Name", placeholder="e.g., 10 - Emerald"
-                )
-                spin = col_b.text_input("Student PIN", placeholder="e.g., 1001")
-                tpin = col_c.text_input(
-                    "Teacher PIN", placeholder="e.g., EMERALD2026"
-                )
+            # 1. Select Action Mode
+            action_mode = st.radio(
+                "Select Action Mode:", 
+                ["➕ Add / Register New Class Section", "✏️ Edit / Update Existing Section"], 
+                horizontal=True
+            )
 
-                if st.form_submit_button("Save Section Configuration"):
-                    if nsec.strip() and spin.strip() and tpin.strip():
-                        ws_c = sh.worksheet("Class Configuration")
-                        ws_c.append_row(
-                            [nsec.strip(), spin.strip(), tpin.strip()]
-                        )
-                        st.cache_data.clear()
-                        st.success(f"Registered section '{nsec}' successfully!")
-                        st.rerun()
+            st.markdown("---")
+
+            # --- ACTION A: ADD NEW SECTION ---
+            if action_mode == "➕ Add / Register New Class Section":
+                with st.form("add_section_form", clear_on_submit=True):
+                    st.write("➕ **Add / Register New Class Section**")
+                    col_a, col_b, col_c = st.columns(3)
+                    nsec = col_a.text_input(
+                        "Section Name", placeholder="e.g., 10 - Emerald"
+                    )
+                    spin = col_b.text_input("Student PIN", placeholder="e.g., 1001")
+                    tpin = col_c.text_input(
+                        "Teacher PIN", placeholder="e.g., EMERALD2026"
+                    )
+
+                    if st.form_submit_button("Save New Section Configuration", type="primary"):
+                        if nsec.strip() and spin.strip() and tpin.strip():
+                            try:
+                                ws_c = sh.worksheet("Class Configuration")
+                                ws_c.append_row(
+                                    [nsec.strip(), spin.strip(), tpin.strip()]
+                                )
+                                st.cache_data.clear()
+                                st.success(f"Registered section '{nsec}' successfully!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error saving to Google Sheets: {e}")
+                        else:
+                            st.error("Please fill out all section fields.")
+
+            # --- ACTION B: EDIT / UPDATE EXISTING SECTION ---
+            elif action_mode == "✏️ Edit / Update Existing Section":
+                if not pin_df.empty and "Class/Section" in pin_df.columns:
+                    section_list = pin_df["Class/Section"].dropna().astype(str).str.strip().tolist()
+                    
+                    if section_list:
+                        selected_section = st.selectbox("Select Class Section to Edit:", section_list)
+                        
+                        # Retrieve existing row data for the selected section
+                        current_row = pin_df[pin_df["Class/Section"].astype(str).str.strip() == selected_section].iloc[0]
+                        
+                        with st.form("edit_section_form"):
+                            st.write(f"✏️ **Editing Credentials for Section: {selected_section}**")
+                            col1, col2, col3 = st.columns(3)
+                            updated_section = col1.text_input("Section Name", value=str(current_row["Class/Section"]))
+                            updated_student_pin = col2.text_input("Student PIN", value=str(current_row["Student PIN"]))
+                            updated_teacher_pin = col3.text_input("Teacher PIN", value=str(current_row["Teacher PIN"]))
+                            
+                            submit_update = st.form_submit_button("💾 Save Updated Credentials", type="primary")
+                            
+                            if submit_update:
+                                if updated_section.strip() and updated_student_pin.strip() and updated_teacher_pin.strip():
+                                    try:
+                                        ws_c = sh.worksheet("Class Configuration")
+                                        # Locate cell containing the original section name
+                                        cell = ws_c.find(selected_section)
+                                        
+                                        if cell:
+                                            # Update Columns A, B, and C in that row
+                                            ws_c.update(
+                                                f"A{cell.row}:C{cell.row}",
+                                                [[updated_section.strip(), updated_student_pin.strip(), updated_teacher_pin.strip()]]
+                                            )
+                                            st.cache_data.clear()
+                                            st.success(f"Successfully updated credentials for '{updated_section}'!")
+                                            st.rerun()
+                                        else:
+                                            st.error("Could not locate the section row in Google Sheets.")
+                                    except Exception as e:
+                                        st.error(f"Error updating Google Sheets: {e}")
+                                else:
+                                    st.error("Please fill out all fields before saving.")
                     else:
-                        st.error("Please fill out all section fields.")
+                        st.info("No sections available to edit.")
+                else:
+                    st.info("No class section configuration found.")
 
             st.markdown("---")
             st.write("📋 **Registered Class Section Credentials**")
@@ -869,9 +929,9 @@ else:
             st.markdown(f"""
             <div class="guidance-box">
                 <b>What This Tool Implies:</b><br>
-                * Configures active classroom section access credentials for advisory teachers and students.<br><br>
+                * Configures active classroom section access credentials and enables PIN rotations for advisory teachers and students.<br><br>
                 <b>Counselor Action Items:</b><br>
                 1. <b>Credential Distribution:</b> Issue designated Teacher PINs to respective advisory teachers.<br>
-                2. <b>Security Audits:</b> Periodically update PIN configurations to prevent unauthorized access.
+                2. <b>Security Audits & Updates:</b> Periodically update PIN configurations or adjust section names to reflect schedule changes.
             </div>
             """, unsafe_allow_html=True)
