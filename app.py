@@ -14,6 +14,9 @@ st.set_page_config(
 query_params = st.query_params
 APP_MODE = query_params.get("mode", "kiosk").lower()  # Options: 'kiosk' or 'qr'
 
+# Human-readable device source tags for counselor visibility
+SOURCE_TAG = "📱 Mobile (QR Scan)" if APP_MODE == "qr" else "💻 Classroom Kiosk"
+
 
 def is_off_hours() -> bool:
     """Checks if current time is outside Mon-Fri 8:00 AM - 5:00 PM."""
@@ -68,7 +71,9 @@ st.markdown(hide_streamlit_ui, unsafe_allow_html=True)
 
 # --- SAFEGUARDING & PRIVACY UTILITIES ---
 SALT_KEY = st.secrets.get("SALT_KEY", "EMPOWER_2026_SECURE_SALT")
-PROFANITY_REGEX = r"(?i)\b(gago|tanga|bobo|tangina|penta|pUTA|ulol|fuck|shit|bitch|asshole|bastard)\b"
+PROFANITY_REGEX = (
+    r"(?i)\b(gago|tanga|bobo|tangina|penta|puta|ulol|fuck|shit|bitch|asshole|bastard)\b"
+)
 MALICIOUS_INPUT_REGEX = (
     r"(?i)(<script.*?>.*?</script>|<[^>]+>|SELECT\s+.*?\s+FROM|DROP\s+TABLE|OR\s+1=1)"
 )
@@ -362,8 +367,25 @@ with col_logo:
 
 with col_title:
     st.markdown("## 🌱 EMPOWER Safe Space")
-    mode_label = "Classroom Kiosk Mode" if APP_MODE == "kiosk" else "Confidential Device Portal"
-    st.caption(f"Fatima National High School | Guidance Hub ({mode_label})")
+    st.caption(f"Fatima National High School | Access Mode: **{SOURCE_TAG}**")
+
+# --- KIOSK QR CODE GENERATOR EXPANDER ---
+if APP_MODE == "kiosk":
+    with st.expander("📱 **Prefer to answer privately on your phone? Scan here!**"):
+        # URL pointing to Mobile QR Mode
+        mobile_qr_url = "https://empower-app-fnhs.streamlit.app/?mode=qr"
+        qr_api_img = f"https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={mobile_qr_url}"
+
+        q_col1, q_col2 = st.columns([1, 2])
+        with q_col1:
+            st.image(qr_api_img, caption="Scan with Phone Camera", width=160)
+        with q_col2:
+            st.markdown("""
+            **How it works:**
+            1. Point your phone camera at the QR code.
+            2. Open the link to submit your reflection privately.
+            3. Teachers and counselors will see it logged as **📱 Mobile (QR Scan)**.
+            """)
 
 st.markdown(
     f"""
@@ -443,7 +465,7 @@ if input_pin in student_pins:
                         "",
                         "",
                         "",
-                        f"[Mood: {mood}] [Kiosk 1-Touch Request] Student requested 1-on-1 counselor visit.",
+                        f"[{SOURCE_TAG}] [Mood: {mood}] Student requested 1-on-1 counselor visit.",
                     ])
                     st.success("✅ Your request has been logged privately with Guidance. Thank you!")
                 except Exception as e:
@@ -499,7 +521,7 @@ if input_pin in student_pins:
 
             if submitted:
                 try:
-                    channel_tag = f"[{APP_MODE.upper()} Mode]"
+                    channel_tag = f"[{SOURCE_TAG}]"
                     if has_roster:
                         if sender_name == "-- Select Your Name --":
                             st.error("Please select your name before submitting.")
@@ -606,7 +628,7 @@ if input_pin in student_pins:
             if badge_submitted:
                 try:
                     clean_note = sanitize_input(note)
-                    channel_tag = f"[{APP_MODE.upper()} Mode]"
+                    channel_tag = f"[{SOURCE_TAG}]"
                     if has_roster:
                         if recipient_name == "-- Select Classmate --":
                             st.error("Please select a recipient from the list.")
