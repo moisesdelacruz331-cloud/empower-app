@@ -4,6 +4,7 @@ import re
 import gspread
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 # Page Configuration
 st.set_page_config(
@@ -371,15 +372,37 @@ if APP_MODE == "qr" and is_off_hours():
         "the **National Center for Mental Health Hotline at 1553** or **Hopeline PH at (02) 8893-7603**."
     )
 
-# --- HEADER WITH SCHOOL LOGO & DAILY INSPIRATION ---
-col_logo, col_title = st.columns([1, 4])
+# --- HEADER WITH SCHOOL LOGO, TITLE & REAL-TIME DIGITAL CLOCK ---
+col_logo, col_title, col_clock = st.columns([1, 3, 2])
 
 with col_logo:
-    st.image("fatimanhslogo.png", width=90)
+    st.image("fatimanhslogo.png", width=85)
 
 with col_title:
     st.markdown("## 🌱 EMPOWER Safe Space")
-    st.caption(f"Fatima National High School | Access Mode: **{SOURCE_TAG}**")
+    st.caption(f"Fatima National High School | Mode: **{SOURCE_TAG}**")
+
+with col_clock:
+    # Real-Time Ticking Digital Clock Widget
+    clock_html = """
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; text-align: right; background-color: #EBF5EE; border: 1px solid #B8E0D2; padding: 6px 12px; border-radius: 10px; margin-top: 4px;">
+        <div id="date-display" style="font-size: 0.78rem; color: #2D6A4F; font-weight: 600;">📅 Loading Date...</div>
+        <div id="time-display" style="font-size: 1.05rem; color: #1B4332; font-weight: 700; margin-top: 1px;">⏰ Loading Time...</div>
+    </div>
+    <script>
+    function updateLiveClock() {
+        const now = new Date();
+        const dateOptions = { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' };
+        const timeOptions = { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true };
+        
+        document.getElementById('date-display').innerText = '📅 ' + now.toLocaleDateString('en-US', dateOptions);
+        document.getElementById('time-display').innerText = '⏰ ' + now.toLocaleTimeString('en-US', timeOptions);
+    }
+    setInterval(updateLiveClock, 1000);
+    updateLiveClock();
+    </script>
+    """
+    components.html(clock_html, height=58)
 
 # --- KIOSK QR CODE GENERATOR EXPANDER ---
 if APP_MODE == "kiosk":
