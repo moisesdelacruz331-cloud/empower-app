@@ -149,14 +149,12 @@ def clean_pulse_data(df_pulse: pd.DataFrame) -> pd.DataFrame:
     df_clean = df_pulse.copy()
     df_clean.columns = df_clean.columns.str.strip()
 
-    # Find timestamp column dynamically
     ts_col = next((c for c in df_clean.columns if c.lower() in ["timestamp", "date", "time"]), None)
 
     if ts_col:
         df_clean["Timestamp_DT"] = pd.to_datetime(df_clean[ts_col], errors="coerce")
         df_clean["Date_Only"] = df_clean["Timestamp_DT"].dt.date
 
-        # Preserve Date_Only and Student LRN using as_index=False
         lrn_col = next((c for c in df_clean.columns if "lrn" in c.lower() or "student" in c.lower()), None)
         if lrn_col:
             df_clean = (
@@ -244,35 +242,37 @@ def parse_mood_and_requests(df: pd.DataFrame) -> pd.DataFrame:
 def render_sociogram_analytics(
     df_pulse, df_badges, section_roster=None, section_label="Active View"
 ):
-    """Calculates network centrality and renders sociogram."""
-    df_clean = clean_pulse_data(df_pulse)
-
-    if df_clean.empty:
-        st.info(f"No check-in data available for {section_label}.")
+    """Calculates network centrality and renders sociogram using section-filtered real data."""
+    if df_pulse.empty:
+        st.info(f"No check-in data available for section: **{section_label}**.")
         return []
 
     G = nx.DiGraph()
 
-    for _, row in df_clean.iterrows():
-        sender = str(row.get("Student LRN", "")).strip()
+    # Identify real student identifier column dynamically
+    id_col = next(
+        (c for c in df_pulse.columns if c.lower() in ["student name", "student lrn", "lrn", "student"]),
+        "Student LRN"
+    )
+
+    for _, row in df_pulse.iterrows():
+        sender = str(row.get(id_col, "")).strip()
         kind_peer = str(row.get("Kind Peer", "")).strip()
         preferred_peer = str(row.get("Preferred Groupmate", "")).strip()
 
-        if sender and sender.lower() != "nan":
+        if sender and sender.lower() not in ["nan", "none", ""]:
             G.add_node(sender)
-            if kind_peer and kind_peer.lower() != "nan" and sender != kind_peer:
+            if kind_peer and kind_peer.lower() not in ["nan", "none", ""] and sender != kind_peer:
                 G.add_edge(sender, kind_peer, relation="Kindness")
             if (
                 preferred_peer
-                and preferred_peer.lower() != "nan"
+                and preferred_peer.lower() not in ["nan", "none", ""]
                 and sender != preferred_peer
             ):
-                G.add_edge(
-                    sender, preferred_peer, relation="Preferred Partner"
-                )
+                G.add_edge(sender, preferred_peer, relation="Preferred Partner")
 
     if G.number_of_nodes() == 0:
-        st.info(f"Insufficient peer nomination data for {section_label}.")
+        st.info(f"Insufficient peer nomination data for section: **{section_label}**.")
         return []
 
     in_degree = dict(G.in_degree())
@@ -284,7 +284,7 @@ def render_sociogram_analytics(
     )
 
     present_students = set(
-        df_clean["Student LRN"].astype(str).str.strip().unique()
+        df_pulse[id_col].astype(str).str.strip().unique()
     )
     if section_roster and len(section_roster) > 0:
         full_roster = set([str(x).strip() for x in section_roster])
@@ -299,21 +299,22 @@ def render_sociogram_analytics(
     ]
 
     badge_counts = {}
-    if not df_badges.empty and "Recipient LRN" in df_badges.columns:
+    recipient_col = next(
+        (c for c in df_badges.columns if "recipient" in c.lower() or "student" in c.lower()),
+        "Recipient LRN"
+    ) if not df_badges.empty else None
+
+    if not df_badges.empty and recipient_col in df_badges.columns:
         badge_counts = (
-            df_badges["Recipient LRN"]
+            df_badges[recipient_col]
             .astype(str)
             .str.strip()
             .value_counts()
             .to_dict()
         )
 
-    badge_median = (
-        np.median(list(badge_counts.values())) if badge_counts else 0
-    )
-    centrality_threshold = (
-        np.median(list(centrality.values())) if centrality else 0
-    )
+    badge_median = np.median(list(badge_counts.values())) if badge_counts else 0
+    centrality_threshold = np.median(list(centrality.values())) if centrality else 0
 
     eligible_anchors = []
     for node, deg in in_degree.items():
@@ -343,12 +344,7 @@ def render_sociogram_analytics(
     )
 
     node_x, node_y, node_colors, node_sizes, node_labels, node_hover = (
-        [],
-        [],
-        [],
-        [],
-        [],
-        [],
+        [], [], [], [], [], []
     )
     for node in G.nodes():
         x, y = pos[node]
@@ -368,7 +364,7 @@ def render_sociogram_analytics(
 
         node_labels.append(str(node))
         node_hover.append(
-            f"<b>Student ID:</b> {node}<br>"
+            f"<b>Student:</b> {node}<br>"
             f"<b>Nominations Received:</b> {deg}<br>"
             f"<b>Badges Earned:</b> {badge_counts.get(node, 0)}<br>"
             f"<b>Status:</b> {'Dual-Filter Peer Anchor' if node in eligible_anchors else 'Isolated (Present)' if node in isolated_nodes else 'Standard'}"
@@ -403,14 +399,12 @@ def render_sociogram_analytics(
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("---")
-    st.markdown(
-        f"#### 💡 Sociogram Interpretation & Action Plan ({section_label})"
-    )
+    st.markdown(f"#### 💡 Sociogram Interpretation & Action Plan ({section_label})")
 
     col_m1, col_m2, col_m3 = st.columns(3)
     col_m1.metric(
         "Section Inclusion Rate",
-        f"{((n_nodes - len(isolated_nodes)) / n_nodes * 100):.1f}%",
+        f"{((n_nodes - len(isolated_nodes)) / n_nodes * 100):.1f}%" if n_nodes > 0 else "0%",
     )
     col_m2.metric(
         "Dual-Filter Peer Anchors",
@@ -425,11 +419,11 @@ def render_sociogram_analytics(
     st.markdown(
         f"""
     <div class="guidance-box">
-        <b>What This Graph Implies:</b><br>
-        * <b>🔴 Red Nodes ({len(isolated_nodes)}):</b> Students present during check-in with zero peer nominations.<br>
-        * <b>🔵 Blue Nodes ({len(eligible_anchors)}):</b> Validated Peer Anchors with high network centrality and kindness badges.<br><br>
+        <b>What This Graph Implies ({section_label}):</b><br>
+        * <b>🔴 Red Nodes ({len(isolated_nodes)}):</b> Students present in {section_label} check-ins with zero peer nominations.<br>
+        * <b>🔵 Blue Nodes ({len(eligible_anchors)}):</b> Validated Peer Anchors in {section_label} with high network centrality and kindness badges.<br><br>
         <b>Recommended Staff Action Items:</b><br>
-        1. <b>Eliminate Free Grouping:</b> Pre-assign groups.<br>
+        1. <b>Eliminate Free Grouping:</b> Pre-assign collaborative groups for {section_label}.<br>
         2. <b>Implement Peer-Shielding:</b> Pair isolated students (🔴) with Dual-Filter Peer Anchors (🔵).
     </div>
     """,
@@ -639,6 +633,7 @@ else:
 
     st.sidebar.write(f"Active Scope: **{active_section_filter}**")
 
+    # Filter base dataframes dynamically for active section
     df_pulse = df_pulse_clean.copy()
     df_badges = df_badges_raw.copy()
 
@@ -922,43 +917,37 @@ else:
         )
 
         if not df_pulse.empty:
-            # Self-healing safeguard: ensure Date_Only exists
             if "Date_Only" not in df_pulse.columns and "Timestamp" in df_pulse.columns:
                 df_pulse["Timestamp_DT"] = pd.to_datetime(df_pulse["Timestamp"], errors="coerce")
                 df_pulse["Date_Only"] = df_pulse["Timestamp_DT"].dt.date
 
             if "Date_Only" in df_pulse.columns and df_pulse["Date_Only"].notna().any():
-                # Extract unique sorted dates (newest first)
                 available_dates = sorted([d for d in df_pulse["Date_Only"].dropna().unique()], reverse=True)
 
                 if available_dates:
-                    # Initialize session state index
                     if "tab2_date_idx" not in st.session_state:
                         st.session_state.tab2_date_idx = 0
 
-                    # Bounds check
                     if st.session_state.tab2_date_idx >= len(available_dates):
                         st.session_state.tab2_date_idx = len(available_dates) - 1
                     if st.session_state.tab2_date_idx < 0:
                         st.session_state.tab2_date_idx = 0
 
-                    # --- PROMINENT DAY NAVIGATION ARROW BAR ---
                     col_prev, col_select, col_next = st.columns([1.5, 3, 1.5])
 
                     with col_prev:
-                        st.write("")  # Vertical spacing align
+                        st.write("")
                         if st.button("◀️ Newer Day", disabled=(st.session_state.tab2_date_idx == 0), use_container_width=True):
                             st.session_state.tab2_date_idx -= 1
                             st.rerun()
 
                     with col_next:
-                        st.write("")  # Vertical spacing align
+                        st.write("")
                         if st.button("Older Day ▶️", disabled=(st.session_state.tab2_date_idx == len(available_dates) - 1), use_container_width=True):
                             st.session_state.tab2_date_idx += 1
                             st.rerun()
 
                     with col_select:
-                        # Dropdown synchronized with date index
                         curr_date = st.selectbox(
                             "📅 Selected Log Date:",
                             options=available_dates,
@@ -970,10 +959,8 @@ else:
 
                     st.markdown("---")
 
-                    # Filter data exclusively for the selected day
                     df_day_log = df_pulse[df_pulse["Date_Only"] == curr_date].copy()
 
-                    # --- HIGH-PRIORITY / FLAGGED FILTER TOGGLE ---
                     show_flagged_only = st.toggle(
                         "🚨 High-Priority / Flagged Filter (Isolate Urgent Cases for This Day)", 
                         key="toggle_flagged_only_tab2"
@@ -1046,19 +1033,20 @@ else:
     # TAB 3: KINDNESS BADGES LOG
     # =========================================================================
     with tabs[2]:
-        st.subheader("🏅 Kindness Badges Awarded Log")
+        st.subheader(f"🏅 Kindness Badges Awarded Log ({active_section_filter})")
         if not df_badges.empty:
             st.dataframe(df_badges, use_container_width=True)
         else:
             st.info("No kindness badge records found for this section/date filter.")
 
     # =========================================================================
-    # TAB 4: PEER INCLUSION & SOCIOGRAM
+    # TAB 4: PEER INCLUSION & SOCIOGRAM NETWORK (DYNAMICALLY FILTERED)
     # =========================================================================
     with tabs[3]:
-        st.subheader("🫂 Peer Inclusion & Sociogram Network")
+        st.subheader(f"🫂 Peer Inclusion & Sociogram Network ({active_section_filter})")
+        # Passes the active section-filtered df_pulse and df_badges dataframes
         render_sociogram_analytics(
-            df_pulse_clean, df_badges_raw, section_label=active_section_filter
+            df_pulse, df_badges, section_label=active_section_filter
         )
 
     # =========================================================================
