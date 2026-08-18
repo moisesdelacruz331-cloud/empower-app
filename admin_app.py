@@ -924,18 +924,46 @@ else:
             )
 
     # =========================================================================
-    # TAB 2: DAILY RESPONSES LOG
+    # TAB 2: DAILY RESPONSES LOG (WITH FLAGGED FILTER)
     # =========================================================================
     with tabs[1]:
         st.subheader(
             f"💬 Student Response Log per Day ({active_section_filter} | {view_date_label})"
         )
         st.caption(
-            "Filter responses per day using the sidebar widget to examine"
-            " individual student reflections."
+            "Filter responses per day using the sidebar widget or isolate flagged cases "
+            "using the high-priority filter below."
         )
 
         if not df_pulse.empty:
+            # --- HIGH-PRIORITY / FLAGGED FILTER TOGGLE ---
+            show_flagged_only = st.toggle(
+                "🚨 High-Priority / Flagged Filter (Isolate Urgent Cases)", 
+                key="toggle_flagged_only"
+            )
+
+            df_log_display = df_pulse.copy()
+
+            if show_flagged_only:
+                DISTRESS_KEYWORDS = r"kill|die|bomb|hurt|abuse|suicide|harm|help|scared|unsafe|depressed|threat|bully|afraid"
+                CASUAL_GREETINGS = r"^(hello|hi|hey|test|none|n/a|no|nothing|ok|okay|good morning|good afternoon)\.?$"
+
+                is_concerning_request = (
+                    df_log_display["Clean_Counselor_Request"].str.contains(DISTRESS_KEYWORDS, na=False, case=False)
+                ) | (
+                    (df_log_display["Clean_Counselor_Request"].str.strip() != "")
+                    & (~df_log_display["Clean_Counselor_Request"].str.strip().str.lower().str.match(CASUAL_GREETINGS, na=False))
+                )
+
+                flagged_mask = (
+                    df_log_display["Mood"].str.contains("Overwhelmed|Sad|Anxious|Stressed", na=False, case=False)
+                    | is_concerning_request
+                    | df_log_display["GC_Vibe"].str.contains("Targeted teasing|Cyberbullying", na=False, case=False)
+                    | df_log_display["Bystander_Check"].str.contains("teased|excluded|unsafe", na=False, case=False)
+                )
+                
+                df_log_display = df_log_display[flagged_mask]
+
             display_cols = [
                 "Timestamp",
                 "Class/Section",
@@ -948,12 +976,20 @@ else:
                 "Clean_Counselor_Request",
                 "Source_Tag",
             ]
-            avail_cols = [c for c in display_cols if c in df_pulse.columns]
+            avail_cols = [c for c in display_cols if c in df_log_display.columns]
 
-            st.dataframe(
-                df_pulse[avail_cols].sort_values("Timestamp", ascending=False),
-                use_container_width=True,
-            )
+            if not df_log_display.empty:
+                st.dataframe(
+                    df_log_display[avail_cols].sort_values("Timestamp", ascending=False),
+                    use_container_width=True,
+                )
+                if show_flagged_only:
+                    st.warning(f"⚠️ Displaying **{len(df_log_display)}** high-priority flagged response(s) requiring intervention.")
+            else:
+                if show_flagged_only:
+                    st.success("✅ No high-priority or flagged responses detected for this scope/date.")
+                else:
+                    st.info("No responses found.")
 
             st.markdown(
                 f"""
