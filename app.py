@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-# Page Configuration
+# --- PAGE CONFIGURATION ---
 st.set_page_config(
     page_title="EMPOWER | Safe Space & Bullying Prevention",
     page_icon="🌱",
@@ -28,7 +28,7 @@ def is_off_hours() -> bool:
     return is_weekend or is_outside_work_hours
 
 
-# --- HIDE STREAMLIT BRANDING & UI ELEMENTS ---
+# --- STREAMLIT BRANDING & UI CLEANUP ---
 hide_streamlit_ui = """
     <style>
     [data-testid="stHeader"] { display: none !important; }
@@ -46,9 +46,9 @@ hide_streamlit_ui = """
 """
 st.markdown(hide_streamlit_ui, unsafe_allow_html=True)
 
-# --- SAFEGUARDING & PRIVACY UTILITIES ---
+# --- SAFEGUARDING, PRIVACY & SECURITY UTILITIES ---
 SALT_KEY = st.secrets.get("SALT_KEY", "EMPOWER_2026_SECURE_SALT")
-COUNSELOR_PIN = st.secrets.get("COUNSELOR_PIN", "9999")  # Default Counselor Admin PIN
+COUNSELOR_PIN = st.secrets.get("COUNSELOR_PIN", "9999")  # Quick triage PIN
 
 PROFANITY_REGEX = (
     r"(?i)\b(gago|tanga|bobo|tangina|penta|puta|ulol|fuck|shit|bitch|asshole|bastard)\b"
@@ -59,7 +59,7 @@ MALICIOUS_INPUT_REGEX = (
 
 
 def generate_anonymous_id(raw_id: str, salt: str = SALT_KEY) -> str:
-    """Converts a raw LRN or student identifier into a salted SHA-256 token (e.g., STU-8A2F)."""
+    """Converts a raw LRN or student identifier into a salted SHA-256 token (STU-XXXX)."""
     if not raw_id or str(raw_id).strip() == "":
         return ""
     clean_id = str(raw_id).strip()
@@ -69,7 +69,7 @@ def generate_anonymous_id(raw_id: str, salt: str = SALT_KEY) -> str:
 
 
 def sanitize_input(text: str) -> str:
-    """Filters profane language and strips malicious injection vectors."""
+    """Filters profane language and strips malicious script/SQL injection vectors."""
     if not text or not isinstance(text, str):
         return ""
     sanitized = re.sub(
@@ -136,7 +136,7 @@ DAILY_INSPIRATIONS = [
 day_of_year = datetime.now().timetuple().tm_yday
 today_quote = DAILY_INSPIRATIONS[day_of_year % len(DAILY_INSPIRATIONS)]
 
-# --- BADGES DICTIONARY ---
+# --- KINDNESS BADGES CATALOG ---
 BADGE_DETAILS = {
     "🌟 Quiet Hero": {
         "icon": "🌟",
@@ -195,7 +195,7 @@ BADGE_DETAILS = {
     },
 }
 
-# --- CUSTOM CSS & CONTRAST OVERRIDES ---
+# --- CUSTOM THEMING & STYLING ---
 st.markdown(
     """
     <style>
@@ -366,7 +366,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- COUNSELOR ADMIN EXPANDER (PROTECTED) ---
+# --- QUICK TRIAGE COUNSELOR ADMIN EXPANDER (PROTECTED) ---
 with st.expander("🔑 Counselor & Guidance Portal (Authorized Access Only)"):
     admin_pin = st.text_input(
         "Enter Counselor Admin PIN:", type="password", key="counselor_pin_key"
@@ -391,11 +391,16 @@ with st.expander("🔑 Counselor & Guidance Portal (Authorized Access Only)"):
             with c_tab1:
                 st.markdown("##### Classroom Bullying & Climate Risk Level")
                 if not ws_checkins.empty:
-                    # Count digital atmosphere indicators
-                    gc_risk_count = ws_checkins["Counselor Request / Note"].str.contains(
+                    note_col = (
+                        "Counselor Request"
+                        if "Counselor Request" in ws_checkins.columns
+                        else ws_checkins.columns[-1]
+                    )
+
+                    gc_risk_count = ws_checkins[note_col].str.contains(
                         "🔴 Targeted teasing|Group chat drama", na=False
                     ).sum()
-                    bystander_alerts = ws_checkins["Counselor Request / Note"].str.contains(
+                    bystander_alerts = ws_checkins[note_col].str.contains(
                         "repeatedly teased|excluded", na=False
                     ).sum()
 
@@ -418,6 +423,7 @@ with st.expander("🔑 Counselor & Guidance Portal (Authorized Access Only)"):
                 if not ws_checkins.empty and "Reaching Out ID" in ws_checkins.columns:
                     isolation_counts = (
                         ws_checkins["Reaching Out ID"]
+                        .astype(str)
                         .value_counts()
                         .drop("", errors="ignore")
                     )
@@ -438,7 +444,7 @@ with st.expander("🔑 Counselor & Guidance Portal (Authorized Access Only)"):
                     "Pairs 'Safe Harbor' and 'Sunshine' peers with isolated students to break up cliques and prevent public rejection."
                 )
 
-                target_section = st.text_input("Enter Section Name (e.g. 11-PA STEM B):", value="")
+                target_section = st.text_input("Enter Section Name (e.g., 10 - Emerald):", value="")
                 if st.button("Generate Inclusive Groupings"):
                     sec_roster = get_isolated_section_roster(target_section)
                     if sec_roster:
@@ -541,14 +547,13 @@ if input_pin in student_pins:
                 )
             else:
                 st.info("💡 Manual Input Mode (Roster loading fallback):")
-                lrn_input = st.text_input("Learner Reference Number (LRN)", placeholder="e.g. 123456789012")
+                lrn_input = st.text_input("Learner Reference Number (LRN)", placeholder="e.g., 123456789012")
                 kind_peer_input = st.text_input("✨ Peer Appreciation (LRN/Name)")
                 groupmate_input = st.text_input("🤝 Preferred Groupmate (LRN/Name)")
                 isolated_peer_input = st.text_input("🫂 Reaching Out (LRN/Name)")
 
             st.markdown("##### 🌐 Cyberbullying & Upstander Early Warning")
 
-            # UPGRADE: Cyberbullying Early Warning
             online_vibe = st.radio(
                 "How is the atmosphere in your class group chats / social media spaces this week?",
                 options=[
@@ -559,7 +564,6 @@ if input_pin in student_pins:
                 index=0,
             )
 
-            # UPGRADE: Upstander Bystander Channel
             bystander_observation = st.selectbox(
                 "👁️ Bystander Check: Have you noticed anyone being excluded, picked on, or left out?",
                 options=[
@@ -592,9 +596,21 @@ if input_pin in student_pins:
                             st.error("Please select your name before submitting.")
                         else:
                             anon_sender = roster_map.get(sender_name, "")
-                            anon_kind_peer = roster_map.get(kind_peer_name, "") if kind_peer_name != "-- None / Skip --" else ""
-                            anon_groupmate = roster_map.get(groupmate_name, "") if groupmate_name != "-- None / Skip --" else ""
-                            anon_isolated_peer = roster_map.get(isolated_peer_name, "") if isolated_peer_name != "-- None / Skip --" else ""
+                            anon_kind_peer = (
+                                roster_map.get(kind_peer_name, "")
+                                if kind_peer_name != "-- None / Skip --"
+                                else ""
+                            )
+                            anon_groupmate = (
+                                roster_map.get(groupmate_name, "")
+                                if groupmate_name != "-- None / Skip --"
+                                else ""
+                            )
+                            anon_isolated_peer = (
+                                roster_map.get(isolated_peer_name, "")
+                                if isolated_peer_name != "-- None / Skip --"
+                                else ""
+                            )
 
                             ws = sh.worksheet("Pulse Checkins")
                             ws.append_row([
