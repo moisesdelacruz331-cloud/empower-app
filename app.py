@@ -1,6 +1,5 @@
 from datetime import datetime, time
 import hashlib
-import random
 import re
 import gspread
 import pandas as pd
@@ -48,7 +47,6 @@ st.markdown(hide_streamlit_ui, unsafe_allow_html=True)
 
 # --- SAFEGUARDING, PRIVACY & SECURITY UTILITIES ---
 SALT_KEY = st.secrets.get("SALT_KEY", "EMPOWER_2026_SECURE_SALT")
-COUNSELOR_PIN = st.secrets.get("COUNSELOR_PIN", "9999")  # Quick triage PIN
 
 PROFANITY_REGEX = (
     r"(?i)\b(gago|tanga|bobo|tangina|penta|puta|ulol|fuck|shit|bitch|asshole|bastard)\b"
@@ -365,102 +363,6 @@ st.markdown(
 """,
     unsafe_allow_html=True,
 )
-
-# --- QUICK TRIAGE COUNSELOR ADMIN EXPANDER (PROTECTED) ---
-with st.expander("🔑 Counselor & Guidance Portal (Authorized Access Only)"):
-    admin_pin = st.text_input(
-        "Enter Counselor Admin PIN:", type="password", key="counselor_pin_key"
-    )
-    if admin_pin == COUNSELOR_PIN:
-        st.success("🔓 Access Granted to Guidance & Prevention Analytics")
-        try:
-            ws_checkins = pd.DataFrame(
-                sh.worksheet("Pulse Checkins").get_all_records()
-            )
-            ws_badges = pd.DataFrame(
-                sh.worksheet("Kindness Badges").get_all_records()
-            )
-
-            c_tab1, c_tab2, c_tab3 = st.tabs([
-                "📊 Climate Heatmap",
-                "🚩 Isolation Alerts",
-                "🤝 Inclusive Grouping Engine",
-            ])
-
-            # COUNSELOR TAB 1: CLIMATE HEATMAP
-            with c_tab1:
-                st.markdown("##### Classroom Bullying & Climate Risk Level")
-                if not ws_checkins.empty:
-                    note_col = (
-                        "Counselor Request"
-                        if "Counselor Request" in ws_checkins.columns
-                        else ws_checkins.columns[-1]
-                    )
-
-                    gc_risk_count = ws_checkins[note_col].str.contains(
-                        "🔴 Targeted teasing|Group chat drama", na=False
-                    ).sum()
-                    bystander_alerts = ws_checkins[note_col].str.contains(
-                        "repeatedly teased|excluded", na=False
-                    ).sum()
-
-                    col_m1, col_m2, col_m3 = st.columns(3)
-                    col_m1.metric("Total Reflections", len(ws_checkins))
-                    col_m2.metric("GC Cyber Risk Flags", f"{gc_risk_count} Alert(s)")
-                    col_m3.metric("Bystander Reports", f"{bystander_alerts} Report(s)")
-
-                    st.dataframe(ws_checkins.tail(10), use_container_width=True)
-                else:
-                    st.info("No check-in data recorded yet.")
-
-            # COUNSELOR TAB 2: AUTOMATED ISOLATION ALERTS
-            with c_tab2:
-                st.markdown("##### 🚨 At-Risk Isolation & Exclusion Radar")
-                st.caption(
-                    "Automatically identifies students nominated multiple times under 'Reaching Out' or receiving zero groupmate selections."
-                )
-
-                if not ws_checkins.empty and "Reaching Out ID" in ws_checkins.columns:
-                    isolation_counts = (
-                        ws_checkins["Reaching Out ID"]
-                        .astype(str)
-                        .value_counts()
-                        .drop("", errors="ignore")
-                    )
-                    if not isolation_counts.empty:
-                        st.warning("⚠️ Students flagged for social exclusion risk by peers:")
-                        for stu_id, count in isolation_counts.items():
-                            if count >= 2:
-                                st.write(
-                                    f"• **{stu_id}** — Flagged by **{count} classmates** as seeming quiet, overwhelmed, or left out."
-                                )
-                    else:
-                        st.success("✅ No extreme isolation risk clusters detected this week.")
-
-            # COUNSELOR TAB 3: INCLUSIVE GROUPING RECOMMENDATION ENGINE
-            with c_tab3:
-                st.markdown("##### 🤝 AI Inclusive Project Grouping Engine")
-                st.caption(
-                    "Pairs 'Safe Harbor' and 'Sunshine' peers with isolated students to break up cliques and prevent public rejection."
-                )
-
-                target_section = st.text_input("Enter Section Name (e.g., 10 - Emerald):", value="")
-                if st.button("Generate Inclusive Groupings"):
-                    sec_roster = get_isolated_section_roster(target_section)
-                    if sec_roster:
-                        students = list(sec_roster.values())
-                        random.shuffle(students)
-                        groups = [students[i : i + 4] for i in range(0, len(students), 4)]
-
-                        st.markdown(f"##### Recommended Groups for {target_section}:")
-                        for idx, group in enumerate(groups, 1):
-                            st.info(f"**Group {idx}:** {', '.join(group)}")
-                    else:
-                        st.error("No students found for this section roster.")
-
-        except Exception as e:
-            st.error(f"Error loading analytics: {e}")
-
 
 # --- STEP 1: CLASS PIN VERIFICATION & SECTION AUTHORIZATION ---
 student_pins = load_student_pins()
