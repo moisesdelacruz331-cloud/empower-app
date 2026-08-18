@@ -142,25 +142,27 @@ def compute_graph_layout(_G):
 
 # --- ANTI-PRANK & ANOMALY FILTERING PIPELINE ---
 def clean_pulse_data(df_pulse: pd.DataFrame) -> pd.DataFrame:
-    """Pre-cleaning pipeline: Deduplicates per student & parses timestamps."""
+    """Pre-cleaning pipeline: Deduplicates per student & parses timestamps safely."""
     if df_pulse.empty:
         return df_pulse
 
     df_clean = df_pulse.copy()
+    df_clean.columns = df_clean.columns.str.strip()
 
-    if "Timestamp" in df_clean.columns:
-        df_clean["Timestamp_DT"] = pd.to_datetime(
-            df_clean["Timestamp"], errors="coerce"
-        )
+    # Find timestamp column dynamically
+    ts_col = next((c for c in df_clean.columns if c.lower() in ["timestamp", "date", "time"]), None)
+
+    if ts_col:
+        df_clean["Timestamp_DT"] = pd.to_datetime(df_clean[ts_col], errors="coerce")
         df_clean["Date_Only"] = df_clean["Timestamp_DT"].dt.date
 
-        if "Student LRN" in df_clean.columns:
-            # Keep latest submission per student per date
+        # Preserve Date_Only and Student LRN using as_index=False
+        lrn_col = next((c for c in df_clean.columns if "lrn" in c.lower() or "student" in c.lower()), None)
+        if lrn_col:
             df_clean = (
                 df_clean.sort_values("Timestamp_DT")
-                .groupby(["Date_Only", "Student LRN"])
+                .groupby(["Date_Only", lrn_col], as_index=False)
                 .last()
-                .reset_index(drop=True)
             )
 
     if "Kind Peer" in df_clean.columns and "Student LRN" in df_clean.columns:
@@ -173,15 +175,11 @@ def clean_pulse_data(df_pulse: pd.DataFrame) -> pd.DataFrame:
             axis=1,
         )
 
-    if (
-        "Preferred Groupmate" in df_clean.columns
-        and "Student LRN" in df_clean.columns
-    ):
+    if "Preferred Groupmate" in df_clean.columns and "Student LRN" in df_clean.columns:
         df_clean["Preferred Groupmate"] = df_clean.apply(
             lambda r: (
                 ""
-                if str(r["Student LRN"]).strip()
-                == str(r["Preferred Groupmate"]).strip()
+                if str(r["Student LRN"]).strip() == str(r["Preferred Groupmate"]).strip()
                 else r["Preferred Groupmate"]
             ),
             axis=1,
@@ -511,15 +509,12 @@ def render_student_lookup_tool(df_roster: pd.DataFrame, df_pulse: pd.DataFrame):
 
     if target_token:
         if st.button("🔓 Instantly Match Token"):
-            # Security Authorization Check
             if counselor_pass_input != counselor_master_key:
                 st.error("❌ Invalid Counselor Master Key. Access denied.")
                 return
 
-            # Gather all candidate LRNs from configuration roster & pulse checkins
             candidate_records = []
 
-            # 1. Inspect Roster Sheet
             if not df_roster.empty:
                 for _, row in df_roster.iterrows():
                     for col in df_roster.columns:
@@ -531,7 +526,6 @@ def render_student_lookup_tool(df_roster: pd.DataFrame, df_pulse: pd.DataFrame):
                                     "section": row.get("Class/Section", "N/A")
                                 })
 
-            # 2. Inspect Pulse Records
             if not df_pulse.empty and "Student LRN" in df_pulse.columns:
                 for _, row in df_pulse.iterrows():
                     val = str(row.get("Student LRN", "")).strip()
@@ -541,7 +535,6 @@ def render_student_lookup_tool(df_roster: pd.DataFrame, df_pulse: pd.DataFrame):
                             "section": row.get("Class/Section", "N/A")
                         })
 
-            # Fast Batch-Hash Search Across Candidates
             matched_entry = None
             for entry in candidate_records:
                 if generate_anonymous_id(entry["lrn"]) == target_token:
@@ -564,7 +557,6 @@ if "auth_role" not in st.session_state:
     st.session_state.auth_role = None
     st.session_state.auth_section = None
 
-# Pre-warm PIN config cache silently in background on load
 pin_df = load_pin_config()
 
 if not st.session_state.auth_role:
@@ -614,12 +606,10 @@ else:
         unsafe_allow_html=True,
     )
 
-    # FAST CACHED DATA LOAD
     df_pulse_raw = fetch_pulse_records()
     df_badges_raw = fetch_badge_records()
     df_pulse_clean = clean_pulse_data(df_pulse_raw)
 
-    # 🎯 SCOPE FILTER (Counselor vs Teacher)
     if role == "Counselor":
         available_sections = (
             sorted(
@@ -649,7 +639,6 @@ else:
 
     st.sidebar.write(f"Active Scope: **{active_section_filter}**")
 
-    # Apply Section Filter First
     df_pulse = df_pulse_clean.copy()
     df_badges = df_badges_raw.copy()
 
@@ -726,7 +715,6 @@ else:
         else 0
     )
     
-    # Filter out casual non-urgent greetings from metric requests count
     CASUAL_GREETINGS = r"^(hello|hi|hey|test|none|n/a|no|nothing|ok|okay|good morning|good afternoon)\.?$"
     
     counselor_req_count = (
@@ -924,7 +912,7 @@ else:
             )
 
     # =========================================================================
-    # TAB 2: DAILY RESPONSES LOG (PER-DAY NAVIGATION)
+    # TAB 2: DAILY RESPONSES LOG (PER-DAY NAVIGATION WITH ARROWS)
     # =========================================================================
     with tabs[1]:
         st.subheader(f"💬 Daily Student Response Log ({active_section_filter})")
@@ -933,117 +921,122 @@ else:
             "or dropdown below to step through individual dates."
         )
 
-        if not df_pulse.empty and "Date_Only" in df_pulse.columns:
-            # Extract unique sorted dates (newest first)
-            available_dates = sorted([d for d in df_pulse["Date_Only"].dropna().unique()], reverse=True)
+        if not df_pulse.empty:
+            # Self-healing safeguard: ensure Date_Only exists
+            if "Date_Only" not in df_pulse.columns and "Timestamp" in df_pulse.columns:
+                df_pulse["Timestamp_DT"] = pd.to_datetime(df_pulse["Timestamp"], errors="coerce")
+                df_pulse["Date_Only"] = df_pulse["Timestamp_DT"].dt.date
 
-            if available_dates:
-                # Initialize session state for day navigation
-                if "tab2_date_idx" not in st.session_state:
-                    st.session_state.tab2_date_idx = 0
+            if "Date_Only" in df_pulse.columns and df_pulse["Date_Only"].notna().any():
+                # Extract unique sorted dates (newest first)
+                available_dates = sorted([d for d in df_pulse["Date_Only"].dropna().unique()], reverse=True)
 
-                # Ensure bounds safety
-                if st.session_state.tab2_date_idx >= len(available_dates):
-                    st.session_state.tab2_date_idx = len(available_dates) - 1
-                if st.session_state.tab2_date_idx < 0:
-                    st.session_state.tab2_date_idx = 0
+                if available_dates:
+                    # Initialize session state index
+                    if "tab2_date_idx" not in st.session_state:
+                        st.session_state.tab2_date_idx = 0
 
-                # --- DAY NAVIGATION ARROW BAR ---
-                col_prev, col_select, col_next = st.columns([1.2, 2.6, 1.2])
+                    # Bounds check
+                    if st.session_state.tab2_date_idx >= len(available_dates):
+                        st.session_state.tab2_date_idx = len(available_dates) - 1
+                    if st.session_state.tab2_date_idx < 0:
+                        st.session_state.tab2_date_idx = 0
 
-                with col_prev:
-                    st.write("")  # Vertical spacing align
-                    if st.button("◀️ Newer Day", disabled=(st.session_state.tab2_date_idx == 0), use_container_width=True):
-                        st.session_state.tab2_date_idx -= 1
-                        st.rerun()
+                    # --- PROMINENT DAY NAVIGATION ARROW BAR ---
+                    col_prev, col_select, col_next = st.columns([1.5, 3, 1.5])
 
-                with col_next:
-                    st.write("")  # Vertical spacing align
-                    if st.button("Older Day ▶️", disabled=(st.session_state.tab2_date_idx == len(available_dates) - 1), use_container_width=True):
-                        st.session_state.tab2_date_idx += 1
-                        st.rerun()
+                    with col_prev:
+                        st.write("")  # Vertical spacing align
+                        if st.button("◀️ Newer Day", disabled=(st.session_state.tab2_date_idx == 0), use_container_width=True):
+                            st.session_state.tab2_date_idx -= 1
+                            st.rerun()
 
-                with col_select:
-                    # Dropdown synchronized with date index
-                    curr_date = st.selectbox(
-                        "📅 Selected Log Date:",
-                        options=available_dates,
-                        index=st.session_state.tab2_date_idx,
-                        format_func=lambda d: d.strftime("%A, %B %d, %Y"),
-                        key="tab2_date_picker"
-                    )
-                    # Sync state index if user chooses via selectbox
-                    st.session_state.tab2_date_idx = available_dates.index(curr_date)
+                    with col_next:
+                        st.write("")  # Vertical spacing align
+                        if st.button("Older Day ▶️", disabled=(st.session_state.tab2_date_idx == len(available_dates) - 1), use_container_width=True):
+                            st.session_state.tab2_date_idx += 1
+                            st.rerun()
 
-                st.markdown("---")
+                    with col_select:
+                        # Dropdown synchronized with date index
+                        curr_date = st.selectbox(
+                            "📅 Selected Log Date:",
+                            options=available_dates,
+                            index=st.session_state.tab2_date_idx,
+                            format_func=lambda d: d.strftime("%A, %B %d, %Y") if hasattr(d, "strftime") else str(d),
+                            key="tab2_date_picker"
+                        )
+                        st.session_state.tab2_date_idx = available_dates.index(curr_date)
 
-                # Filter data exclusively for the selected day
-                df_day_log = df_pulse[df_pulse["Date_Only"] == curr_date].copy()
+                    st.markdown("---")
 
-                # --- HIGH-PRIORITY / FLAGGED FILTER TOGGLE ---
-                show_flagged_only = st.toggle(
-                    "🚨 High-Priority / Flagged Filter (Isolate Urgent Cases for This Day)", 
-                    key="toggle_flagged_only_tab2"
-                )
+                    # Filter data exclusively for the selected day
+                    df_day_log = df_pulse[df_pulse["Date_Only"] == curr_date].copy()
 
-                if show_flagged_only:
-                    DISTRESS_KEYWORDS = r"kill|die|bomb|hurt|abuse|suicide|harm|help|scared|unsafe|depressed|threat|bully|afraid"
-                    CASUAL_GREETINGS = r"^(hello|hi|hey|test|none|n/a|no|nothing|ok|okay|good morning|good afternoon)\.?$"
-
-                    is_concerning_request = (
-                        df_day_log["Clean_Counselor_Request"].str.contains(DISTRESS_KEYWORDS, na=False, case=False)
-                    ) | (
-                        (df_day_log["Clean_Counselor_Request"].str.strip() != "")
-                        & (~df_day_log["Clean_Counselor_Request"].str.strip().str.lower().str.match(CASUAL_GREETINGS, na=False))
+                    # --- HIGH-PRIORITY / FLAGGED FILTER TOGGLE ---
+                    show_flagged_only = st.toggle(
+                        "🚨 High-Priority / Flagged Filter (Isolate Urgent Cases for This Day)", 
+                        key="toggle_flagged_only_tab2"
                     )
 
-                    flagged_mask = (
-                        df_day_log["Mood"].str.contains("Overwhelmed|Sad|Anxious|Stressed", na=False, case=False)
-                        | is_concerning_request
-                        | df_day_log["GC_Vibe"].str.contains("Targeted teasing|Cyberbullying", na=False, case=False)
-                        | df_day_log["Bystander_Check"].str.contains("teased|excluded|unsafe", na=False, case=False)
-                    )
-                    df_day_log = df_day_log[flagged_mask]
-
-                display_cols = [
-                    "Timestamp",
-                    "Class/Section",
-                    "Student LRN",
-                    "Mood",
-                    "Kind Peer",
-                    "Preferred Groupmate",
-                    "GC_Vibe",
-                    "Bystander_Check",
-                    "Clean_Counselor_Request",
-                    "Source_Tag",
-                ]
-                avail_cols = [c for c in display_cols if c in df_day_log.columns]
-
-                if not df_day_log.empty:
-                    st.dataframe(
-                        df_day_log[avail_cols].sort_values("Timestamp", ascending=False),
-                        use_container_width=True,
-                    )
                     if show_flagged_only:
-                        st.warning(f"⚠️ Displaying **{len(df_day_log)}** high-priority flagged response(s) for **{curr_date.strftime('%B %d, %Y')}**.")
-                    else:
-                        st.info(f"Showing **{len(df_day_log)}** total response(s) recorded on **{curr_date.strftime('%B %d, %Y')}**.")
-                else:
-                    if show_flagged_only:
-                        st.success(f"✅ No high-priority or flagged responses detected for **{curr_date.strftime('%B %d, %Y')}**.")
-                    else:
-                        st.info(f"No responses recorded on **{curr_date.strftime('%B %d, %Y')}**.")
+                        DISTRESS_KEYWORDS = r"kill|die|bomb|hurt|abuse|suicide|harm|help|scared|unsafe|depressed|threat|bully|afraid"
+                        CASUAL_GREETINGS = r"^(hello|hi|hey|test|none|n/a|no|nothing|ok|okay|good morning|good afternoon)\.?$"
 
-                st.markdown(
-                    f"""
-                <div class="guidance-box">
-                    <b>Log Analysis Guidelines ({curr_date.strftime('%B %d, %Y')}):</b><br>
-                    * <b>Counselor Requests:</b> Check the <i>Clean_Counselor_Request</i> column for confidential help messages submitted by students.<br>
-                    * <b>Peer Nominations:</b> Use <i>Kind Peer</i> and <i>Preferred Groupmate</i> entries to gauge organic social connections formed on this date.
-                </div>
-                """,
-                    unsafe_allow_html=True,
-                )
+                        is_concerning_request = (
+                            df_day_log["Clean_Counselor_Request"].str.contains(DISTRESS_KEYWORDS, na=False, case=False)
+                        ) | (
+                            (df_day_log["Clean_Counselor_Request"].str.strip() != "")
+                            & (~df_day_log["Clean_Counselor_Request"].str.strip().str.lower().str.match(CASUAL_GREETINGS, na=False))
+                        )
+
+                        flagged_mask = (
+                            df_day_log["Mood"].str.contains("Overwhelmed|Sad|Anxious|Stressed", na=False, case=False)
+                            | is_concerning_request
+                            | df_day_log["GC_Vibe"].str.contains("Targeted teasing|Cyberbullying", na=False, case=False)
+                            | df_day_log["Bystander_Check"].str.contains("teased|excluded|unsafe", na=False, case=False)
+                        )
+                        df_day_log = df_day_log[flagged_mask]
+
+                    display_cols = [
+                        "Timestamp",
+                        "Class/Section",
+                        "Student LRN",
+                        "Mood",
+                        "Kind Peer",
+                        "Preferred Groupmate",
+                        "GC_Vibe",
+                        "Bystander_Check",
+                        "Clean_Counselor_Request",
+                        "Source_Tag",
+                    ]
+                    avail_cols = [c for c in display_cols if c in df_day_log.columns]
+
+                    if not df_day_log.empty:
+                        st.dataframe(
+                            df_day_log[avail_cols].sort_values("Timestamp", ascending=False),
+                            use_container_width=True,
+                        )
+                        if show_flagged_only:
+                            st.warning(f"⚠️ Displaying **{len(df_day_log)}** high-priority flagged response(s) for **{curr_date.strftime('%B %d, %Y') if hasattr(curr_date, 'strftime') else curr_date}**.")
+                        else:
+                            st.info(f"Showing **{len(df_day_log)}** total response(s) recorded on **{curr_date.strftime('%B %d, %Y') if hasattr(curr_date, 'strftime') else curr_date}**.")
+                    else:
+                        if show_flagged_only:
+                            st.success(f"✅ No high-priority or flagged responses detected for **{curr_date.strftime('%B %d, %Y') if hasattr(curr_date, 'strftime') else curr_date}**.")
+                        else:
+                            st.info(f"No responses recorded on **{curr_date.strftime('%B %d, %Y') if hasattr(curr_date, 'strftime') else curr_date}**.")
+
+                    st.markdown(
+                        f"""
+                    <div class="guidance-box">
+                        <b>Log Analysis Guidelines ({curr_date.strftime('%B %d, %Y') if hasattr(curr_date, 'strftime') else curr_date}):</b><br>
+                        * <b>Counselor Requests:</b> Check the <i>Clean_Counselor_Request</i> column for confidential help messages submitted by students.<br>
+                        * <b>Peer Nominations:</b> Use <i>Kind Peer</i> and <i>Preferred Groupmate</i> entries to gauge organic social connections formed on this date.
+                    </div>
+                    """,
+                        unsafe_allow_html=True,
+                    )
             else:
                 st.info("No dated check-in entries available.")
         else:
@@ -1105,7 +1098,6 @@ else:
             with admin_tab1:
                 st.markdown("##### Current Registered PIN Configurations")
                 if not pin_df.empty:
-                    # Interactive Live Search Filter
                     search_term = st.text_input(
                         "🔍 Search by Class Section, Student PIN, or Teacher Key:", 
                         placeholder="e.g., Grade 10 - Emerald"
@@ -1157,7 +1149,6 @@ else:
                             st.error("❌ All fields marked with an asterisk (*) are required.")
                         else:
                             try:
-                                # Open connection and append new row
                                 sh = connect_to_gsheet()
                                 ws = sh.worksheet("Class Configuration")
                                 
