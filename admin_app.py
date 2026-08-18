@@ -996,14 +996,132 @@ else:
         render_ifr_tracker()
 
     # =========================================================================
-    # TAB 6 & 7: COUNSELOR-ONLY MODULES
+    # COUNSELOR & ADMIN EXCLUSIVE SUITE (TABS 6 & 7)
     # =========================================================================
     if role == "Counselor":
+        
+        # ---------------------------------------------------------------------
+        # TAB 6: CONFIDENTIAL STUDENT DE-ANONYMIZATION
+        # ---------------------------------------------------------------------
         with tabs[5]:
-            render_student_lookup_tool(pin_df, df_pulse_clean)
+            render_student_lookup_tool(pin_df, df_pulse_raw)
+
+        # ---------------------------------------------------------------------
+        # TAB 7: ACTIVE PIN MANAGER & CLASS CONFIGURATION
+        # ---------------------------------------------------------------------
         with tabs[6]:
-            st.subheader("⚙️ PIN Manager")
-            if not pin_df.empty:
-                st.dataframe(pin_df, use_container_width=True)
-            else:
-                st.info("No PIN configuration data found.")
+            st.subheader("⚙️ Class Configuration & Active PIN Manager")
+            st.caption(
+                "Authorized Admin Suite — Inspect, register, update, and manage "
+                "Class Sections, Student PINs, and Teacher Access Passcodes."
+            )
+            
+            admin_tab1, admin_tab2, admin_tab3 = st.tabs([
+                "📋 Active Roster & PIN Overview", 
+                "➕ Add / Update Section Credentials", 
+                "🧹 System Audit & Maintenance"
+            ])
+            
+            # --- SUB-TAB 1: READ & FILTER CONFIGURATION ---
+            with admin_tab1:
+                st.markdown("##### Current Registered PIN Configurations")
+                if not pin_df.empty:
+                    # Interactive Live Search Filter
+                    search_term = st.text_input(
+                        "🔍 Search by Class Section, Student PIN, or Teacher Key:", 
+                        placeholder="e.g., Grade 10 - Emerald"
+                    ).strip()
+                    
+                    filtered_pin_df = pin_df.copy()
+                    if search_term:
+                        filtered_pin_df = filtered_pin_df[
+                            filtered_pin_df.apply(
+                                lambda row: row.astype(str).str.contains(search_term, case=False).any(), 
+                                axis=1
+                            )
+                        ]
+                    
+                    st.dataframe(
+                        filtered_pin_df, 
+                        use_container_width=True, 
+                        hide_index=True
+                    )
+                    
+                    st.caption(
+                        f"Displaying **{len(filtered_pin_df)}** of **{len(pin_df)}** registered configurations."
+                    )
+                else:
+                    st.warning("⚠️ Class Configuration worksheet could not be loaded or is currently empty.")
+
+            # --- SUB-TAB 2: WRITE / UPDATE GSPREAD DATA ---
+            with admin_tab2:
+                st.markdown("##### ➕ Register New Class Section or Access Credentials")
+                st.info(
+                    "Submitting this form appends a new access row directly into the "
+                    "'Class Configuration' worksheet in your connected Google Sheet."
+                )
+                
+                with st.form("add_pin_config_form", clear_on_submit=True):
+                    col_f1, col_f2, col_f3 = st.columns(3)
+                    
+                    with col_f1:
+                        new_section = st.text_input("Class / Section Name*", placeholder="Grade 10 - Wisdom")
+                    with col_f2:
+                        new_student_pin = st.text_input("Student Access PIN / LRN*", placeholder="1029384756")
+                    with col_f3:
+                        new_teacher_pin = st.text_input("Teacher Passcode*", type="password", placeholder="TEACH2026")
+                        
+                    submit_pin_btn = st.form_submit_button("🚀 Commit Credentials to Database")
+                    
+                    if submit_pin_btn:
+                        if not new_section or not new_student_pin or not new_teacher_pin:
+                            st.error("❌ All fields marked with an asterisk (*) are required.")
+                        else:
+                            try:
+                                # Open connection and append new row
+                                sh = connect_to_gsheet()
+                                ws = sh.worksheet("Class Configuration")
+                                
+                                new_row = [
+                                    new_section.strip(), 
+                                    new_student_pin.strip(), 
+                                    new_teacher_pin.strip()
+                                ]
+                                ws.append_row(new_row)
+                                
+                                st.success(f"✅ Successfully added section **{new_section}**!")
+                                st.cache_data.clear()
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"❌ Failed to write row to Google Sheets: {str(e)}")
+
+            # --- SUB-TAB 3: SYSTEM AUDIT & MAINTENANCE ---
+            with admin_tab3:
+                st.markdown("##### 🛠️ Administrative System & Cache Controls")
+                
+                col_ctrl1, col_ctrl2 = st.columns(2)
+                
+                with col_ctrl1:
+                    st.markdown("###### 🔄 Cache Management")
+                    st.caption(
+                        "Force-clear local Streamlit data caches to retrieve immediate updates "
+                        "edited manually inside the Google Sheets interface."
+                    )
+                    if st.button("🧹 Purge Application Cache"):
+                        st.cache_data.clear()
+                        st.cache_resource.clear()
+                        st.success("✅ Application cache successfully purged. Re-fetching fresh data...")
+                        st.rerun()
+                        
+                with col_ctrl2:
+                    st.markdown("###### 🔒 Anonymization Salt Status")
+                    st.caption("Check active SHA-256 cryptographic salt key status.")
+                    salt_status = (
+                        "STABLE (Custom Secret Injected)" 
+                        if SALT_KEY != "EMPOWER_2026_SECURE_SALT" 
+                        else "DEFAULT (Fallback Salt Active)"
+                    )
+                    st.code(
+                        f"SALT_KEY_STATUS: {salt_status}\nACTIVE_PREFIX: {SALT_KEY[:4]}****", 
+                        language="text"
+                    )
