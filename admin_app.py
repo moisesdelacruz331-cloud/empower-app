@@ -924,87 +924,130 @@ else:
             )
 
     # =========================================================================
-    # TAB 2: DAILY RESPONSES LOG (WITH FLAGGED FILTER)
+    # TAB 2: DAILY RESPONSES LOG (PER-DAY NAVIGATION)
     # =========================================================================
     with tabs[1]:
-        st.subheader(
-            f"💬 Student Response Log per Day ({active_section_filter} | {view_date_label})"
-        )
+        st.subheader(f"💬 Daily Student Response Log ({active_section_filter})")
         st.caption(
-            "Filter responses per day using the sidebar widget or isolate flagged cases "
-            "using the high-priority filter below."
+            "Inspect student check-ins day-by-day. Use the arrow navigation buttons "
+            "or dropdown below to step through individual dates."
         )
 
-        if not df_pulse.empty:
-            # --- HIGH-PRIORITY / FLAGGED FILTER TOGGLE ---
-            show_flagged_only = st.toggle(
-                "🚨 High-Priority / Flagged Filter (Isolate Urgent Cases)", 
-                key="toggle_flagged_only"
-            )
+        if not df_pulse.empty and "Date_Only" in df_pulse.columns:
+            # Extract unique sorted dates (newest first)
+            available_dates = sorted([d for d in df_pulse["Date_Only"].dropna().unique()], reverse=True)
 
-            df_log_display = df_pulse.copy()
+            if available_dates:
+                # Initialize session state for day navigation
+                if "tab2_date_idx" not in st.session_state:
+                    st.session_state.tab2_date_idx = 0
 
-            if show_flagged_only:
-                DISTRESS_KEYWORDS = r"kill|die|bomb|hurt|abuse|suicide|harm|help|scared|unsafe|depressed|threat|bully|afraid"
-                CASUAL_GREETINGS = r"^(hello|hi|hey|test|none|n/a|no|nothing|ok|okay|good morning|good afternoon)\.?$"
+                # Ensure bounds safety
+                if st.session_state.tab2_date_idx >= len(available_dates):
+                    st.session_state.tab2_date_idx = len(available_dates) - 1
+                if st.session_state.tab2_date_idx < 0:
+                    st.session_state.tab2_date_idx = 0
 
-                is_concerning_request = (
-                    df_log_display["Clean_Counselor_Request"].str.contains(DISTRESS_KEYWORDS, na=False, case=False)
-                ) | (
-                    (df_log_display["Clean_Counselor_Request"].str.strip() != "")
-                    & (~df_log_display["Clean_Counselor_Request"].str.strip().str.lower().str.match(CASUAL_GREETINGS, na=False))
+                # --- DAY NAVIGATION ARROW BAR ---
+                col_prev, col_select, col_next = st.columns([1.2, 2.6, 1.2])
+
+                with col_prev:
+                    st.write("")  # Vertical spacing align
+                    if st.button("◀️ Newer Day", disabled=(st.session_state.tab2_date_idx == 0), use_container_width=True):
+                        st.session_state.tab2_date_idx -= 1
+                        st.rerun()
+
+                with col_next:
+                    st.write("")  # Vertical spacing align
+                    if st.button("Older Day ▶️", disabled=(st.session_state.tab2_date_idx == len(available_dates) - 1), use_container_width=True):
+                        st.session_state.tab2_date_idx += 1
+                        st.rerun()
+
+                with col_select:
+                    # Dropdown synchronized with date index
+                    curr_date = st.selectbox(
+                        "📅 Selected Log Date:",
+                        options=available_dates,
+                        index=st.session_state.tab2_date_idx,
+                        format_func=lambda d: d.strftime("%A, %B %d, %Y"),
+                        key="tab2_date_picker"
+                    )
+                    # Sync state index if user chooses via selectbox
+                    st.session_state.tab2_date_idx = available_dates.index(curr_date)
+
+                st.markdown("---")
+
+                # Filter data exclusively for the selected day
+                df_day_log = df_pulse[df_pulse["Date_Only"] == curr_date].copy()
+
+                # --- HIGH-PRIORITY / FLAGGED FILTER TOGGLE ---
+                show_flagged_only = st.toggle(
+                    "🚨 High-Priority / Flagged Filter (Isolate Urgent Cases for This Day)", 
+                    key="toggle_flagged_only_tab2"
                 )
 
-                flagged_mask = (
-                    df_log_display["Mood"].str.contains("Overwhelmed|Sad|Anxious|Stressed", na=False, case=False)
-                    | is_concerning_request
-                    | df_log_display["GC_Vibe"].str.contains("Targeted teasing|Cyberbullying", na=False, case=False)
-                    | df_log_display["Bystander_Check"].str.contains("teased|excluded|unsafe", na=False, case=False)
-                )
-                
-                df_log_display = df_log_display[flagged_mask]
-
-            display_cols = [
-                "Timestamp",
-                "Class/Section",
-                "Student LRN",
-                "Mood",
-                "Kind Peer",
-                "Preferred Groupmate",
-                "GC_Vibe",
-                "Bystander_Check",
-                "Clean_Counselor_Request",
-                "Source_Tag",
-            ]
-            avail_cols = [c for c in display_cols if c in df_log_display.columns]
-
-            if not df_log_display.empty:
-                st.dataframe(
-                    df_log_display[avail_cols].sort_values("Timestamp", ascending=False),
-                    use_container_width=True,
-                )
                 if show_flagged_only:
-                    st.warning(f"⚠️ Displaying **{len(df_log_display)}** high-priority flagged response(s) requiring intervention.")
-            else:
-                if show_flagged_only:
-                    st.success("✅ No high-priority or flagged responses detected for this scope/date.")
+                    DISTRESS_KEYWORDS = r"kill|die|bomb|hurt|abuse|suicide|harm|help|scared|unsafe|depressed|threat|bully|afraid"
+                    CASUAL_GREETINGS = r"^(hello|hi|hey|test|none|n/a|no|nothing|ok|okay|good morning|good afternoon)\.?$"
+
+                    is_concerning_request = (
+                        df_day_log["Clean_Counselor_Request"].str.contains(DISTRESS_KEYWORDS, na=False, case=False)
+                    ) | (
+                        (df_day_log["Clean_Counselor_Request"].str.strip() != "")
+                        & (~df_day_log["Clean_Counselor_Request"].str.strip().str.lower().str.match(CASUAL_GREETINGS, na=False))
+                    )
+
+                    flagged_mask = (
+                        df_day_log["Mood"].str.contains("Overwhelmed|Sad|Anxious|Stressed", na=False, case=False)
+                        | is_concerning_request
+                        | df_day_log["GC_Vibe"].str.contains("Targeted teasing|Cyberbullying", na=False, case=False)
+                        | df_day_log["Bystander_Check"].str.contains("teased|excluded|unsafe", na=False, case=False)
+                    )
+                    df_day_log = df_day_log[flagged_mask]
+
+                display_cols = [
+                    "Timestamp",
+                    "Class/Section",
+                    "Student LRN",
+                    "Mood",
+                    "Kind Peer",
+                    "Preferred Groupmate",
+                    "GC_Vibe",
+                    "Bystander_Check",
+                    "Clean_Counselor_Request",
+                    "Source_Tag",
+                ]
+                avail_cols = [c for c in display_cols if c in df_day_log.columns]
+
+                if not df_day_log.empty:
+                    st.dataframe(
+                        df_day_log[avail_cols].sort_values("Timestamp", ascending=False),
+                        use_container_width=True,
+                    )
+                    if show_flagged_only:
+                        st.warning(f"⚠️ Displaying **{len(df_day_log)}** high-priority flagged response(s) for **{curr_date.strftime('%B %d, %Y')}**.")
+                    else:
+                        st.info(f"Showing **{len(df_day_log)}** total response(s) recorded on **{curr_date.strftime('%B %d, %Y')}**.")
                 else:
-                    st.info("No responses found.")
+                    if show_flagged_only:
+                        st.success(f"✅ No high-priority or flagged responses detected for **{curr_date.strftime('%B %d, %Y')}**.")
+                    else:
+                        st.info(f"No responses recorded on **{curr_date.strftime('%B %d, %Y')}**.")
 
-            st.markdown(
-                f"""
-            <div class="guidance-box">
-                <b>Log Analysis Guidelines ({view_date_label}):</b><br>
-                * <b>Counselor Requests:</b> Check the <i>Clean_Counselor_Request</i> column for confidential help messages submitted by students.<br>
-                * <b>Peer Nominations:</b> Use <i>Kind Peer</i> and <i>Preferred Groupmate</i> entries to gauge organic social connections formed in class.
-            </div>
-            """,
-                unsafe_allow_html=True,
-            )
+                st.markdown(
+                    f"""
+                <div class="guidance-box">
+                    <b>Log Analysis Guidelines ({curr_date.strftime('%B %d, %Y')}):</b><br>
+                    * <b>Counselor Requests:</b> Check the <i>Clean_Counselor_Request</i> column for confidential help messages submitted by students.<br>
+                    * <b>Peer Nominations:</b> Use <i>Kind Peer</i> and <i>Preferred Groupmate</i> entries to gauge organic social connections formed on this date.
+                </div>
+                """,
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.info("No dated check-in entries available.")
         else:
-            st.info(
-                f"No student check-in responses recorded for **{view_date_label}**."
-            )
+            st.info("No student check-in responses recorded yet.")
 
     # =========================================================================
     # TAB 3: KINDNESS BADGES LOG
