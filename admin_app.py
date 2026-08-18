@@ -681,8 +681,17 @@ else:
         if not df_pulse.empty
         else 0
     )
+    
+    # Filter out casual non-urgent greetings from metric requests count
+    CASUAL_GREETINGS = r"^(hello|hi|hey|test|none|n/a|no|nothing|ok|okay|good morning|good afternoon)\.?$"
+    
     counselor_req_count = (
-        len(df_pulse[df_pulse["Clean_Counselor_Request"].str.strip() != ""])
+        len(
+            df_pulse[
+                (df_pulse["Clean_Counselor_Request"].str.strip() != "")
+                & (~df_pulse["Clean_Counselor_Request"].str.strip().str.lower().str.match(CASUAL_GREETINGS, na=False))
+            ]
+        )
         if not df_pulse.empty
         else 0
     )
@@ -725,13 +734,24 @@ else:
 
     # --- DYNAMIC STUDENT MOOD & SAFETY ALERT BANNER ---
     if not df_pulse.empty:
+        # High-risk keywords that explicitly indicate urgency or distress
+        DISTRESS_KEYWORDS = r"kill|die|bomb|hurt|abuse|suicide|harm|help|scared|unsafe|depressed|threat|bully|afraid"
+
+        # Check if counselor request contains non-greeting content or distress keywords
+        is_concerning_request = (
+            df_pulse["Clean_Counselor_Request"].str.contains(DISTRESS_KEYWORDS, na=False, case=False)
+        ) | (
+            (df_pulse["Clean_Counselor_Request"].str.strip() != "")
+            & (~df_pulse["Clean_Counselor_Request"].str.strip().str.lower().str.match(CASUAL_GREETINGS, na=False))
+        )
+
         critical_submissions = df_pulse[
             (
                 df_pulse["Mood"].str.contains(
                     "Overwhelmed|Sad|Anxious|Stressed", na=False, case=False
                 )
             )
-            | (df_pulse["Clean_Counselor_Request"].str.strip() != "")
+            | is_concerning_request
             | (
                 df_pulse["GC_Vibe"].str.contains(
                     "Targeted teasing|Cyberbullying", na=False, case=False
@@ -752,7 +772,7 @@ else:
                 f"""
                 <div class="alert-high">
                     <b>🚨 ACTIVE STUDENT MOOD & SAFETY ALERT ({view_date_label}):</b><br>
-                    <b>{len(critical_submissions)} out of {len(df_pulse)} student responses ({percentage_distressed:.1f}%)</b> reported emotional distress, negative mood check-ins, direct counselor help requests, or active classroom/online bullying signals.
+                    <b>{len(critical_submissions)} out of {len(df_pulse)} student responses ({percentage_distressed:.1f}%)</b> reported emotional distress, negative mood check-ins, urgent counselor help requests, or active classroom/online bullying signals.
                 </div>
             """,
                 unsafe_allow_html=True,
@@ -937,12 +957,14 @@ else:
         render_ifr_tracker()
 
     # =========================================================================
-    # COUNSELOR RESTRICTED TABS
+    # TAB 6 & 7: COUNSELOR-ONLY MODULES
     # =========================================================================
     if role == "Counselor":
         with tabs[5]:
             render_student_lookup_tool()
-
         with tabs[6]:
-            st.subheader("⚙️ PIN & Section Configuration Manager")
-            st.dataframe(pin_df, use_container_width=True)
+            st.subheader("⚙️ PIN Manager")
+            if not pin_df.empty:
+                st.dataframe(pin_df, use_container_width=True)
+            else:
+                st.info("No PIN configuration data found.")
