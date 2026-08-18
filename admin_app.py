@@ -48,6 +48,13 @@ st.markdown(
         border-radius: 8px;
         margin-bottom: 16px;
     }
+    .alert-watch {
+        background-color: #FFFBEB;
+        border-left: 5px solid #F59E0B;
+        padding: 12px 16px;
+        border-radius: 8px;
+        margin-bottom: 16px;
+    }
     .guidance-box {
         background-color: #F0FDF4;
         border-left: 5px solid #10B981;
@@ -78,14 +85,13 @@ def load_pin_config():
     try:
         sh = connect_to_gsheet()
         ws = sh.worksheet("Class Configuration")
-        data = ws.get_all_values()  # 3x-5x faster than get_all_records()
+        data = ws.get_all_values()
         if not data or len(data) < 2:
             return pd.DataFrame(
                 columns=["Class/Section", "Student PIN", "Teacher PIN"]
             )
 
         df = pd.DataFrame(data[1:], columns=data[0])
-        # Clean column spaces if present
         df.columns = df.columns.str.strip()
         return df
     except Exception:
@@ -136,24 +142,28 @@ def compute_graph_layout(_G):
 
 # --- ANTI-PRANK & ANOMALY FILTERING PIPELINE ---
 def clean_pulse_data(df_pulse: pd.DataFrame) -> pd.DataFrame:
-    """Pre-cleaning pipeline: Deduplicates per student & strips self-nominations."""
+    """Pre-cleaning pipeline: Deduplicates per student & parses timestamps."""
     if df_pulse.empty:
         return df_pulse
 
     df_clean = df_pulse.copy()
 
-    if "Timestamp" in df_clean.columns and "Student LRN" in df_clean.columns:
-        df_clean["Timestamp"] = pd.to_datetime(
+    if "Timestamp" in df_clean.columns:
+        df_clean["Timestamp_DT"] = pd.to_datetime(
             df_clean["Timestamp"], errors="coerce"
         )
-        df_clean = (
-            df_clean.sort_values("Timestamp")
-            .groupby("Student LRN")
-            .last()
-            .reset_index()
-        )
+        df_clean["Date_Only"] = df_clean["Timestamp_DT"].dt.date
 
-    if "Kind Peer" in df_clean.columns:
+        if "Student LRN" in df_clean.columns:
+            # Keep latest submission per student per date
+            df_clean = (
+                df_clean.sort_values("Timestamp_DT")
+                .groupby(["Date_Only", "Student LRN"])
+                .last()
+                .reset_index(drop=True)
+            )
+
+    if "Kind Peer" in df_clean.columns and "Student LRN" in df_clean.columns:
         df_clean["Kind Peer"] = df_clean.apply(
             lambda r: (
                 ""
@@ -163,7 +173,10 @@ def clean_pulse_data(df_pulse: pd.DataFrame) -> pd.DataFrame:
             axis=1,
         )
 
-    if "Preferred Groupmate" in df_clean.columns:
+    if (
+        "Preferred Groupmate" in df_clean.columns
+        and "Student LRN" in df_clean.columns
+    ):
         df_clean["Preferred Groupmate"] = df_clean.apply(
             lambda r: (
                 ""
@@ -529,7 +542,6 @@ if not st.session_state.auth_role:
                 st.session_state.auth_section = "ALL"
                 st.rerun()
             else:
-                # Instant check from pre-warmed cache
                 if not pin_df.empty and "Teacher PIN" in pin_df.columns:
                     matched = pin_df[
                         pin_df["Teacher PIN"].astype(str).str.strip()
@@ -563,6 +575,7 @@ else:
     df_badges_raw = fetch_badge_records()
     df_pulse_clean = clean_pulse_data(df_pulse_raw)
 
+    # 🎯 SCOPE FILTER (Counselor vs Teacher)
     if role == "Counselor":
         available_sections = (
             sorted(
@@ -592,16 +605,7 @@ else:
 
     st.sidebar.write(f"Active Scope: **{active_section_filter}**")
 
-    if st.sidebar.button("🔄 Refresh Live Data"):
-        st.cache_data.clear()
-        st.rerun()
-
-    if st.sidebar.button("Logout"):
-        st.session_state.auth_role = None
-        st.session_state.auth_section = None
-        st.cache_data.clear()
-        st.rerun()
-
+    # Apply Section Filter First
     df_pulse = df_pulse_clean.copy()
     df_badges = df_badges_raw.copy()
 
@@ -617,17 +621,63 @@ else:
                 == active_section_filter
             ]
 
+    # 📅 PER-DAY DATE FILTER TOOL FOR TEACHERS/COUNSELORS
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📅 Date Selection")
+
+    if not df_pulse.empty and "Date_Only" in df_pulse.columns:
+        valid_dates = sorted(
+            [d for d in df_pulse["Date_Only"].dropna().unique()], reverse=True
+        )
+        date_options = ["All Dates"] + [d.strftime("%Y-%m-%d") for d in valid_dates]
+        selected_date_str = st.sidebar.selectbox(
+            "Filter Student Responses By Day:", options=date_options, index=0
+        )
+
+        if selected_date_str != "All Dates":
+            selected_date_obj = datetime.strptime(
+                selected_date_str, "%Y-%m-%d"
+            ).date()
+            df_pulse = df_pulse[df_pulse["Date_Only"] == selected_date_obj]
+            view_date_label = f"Day: {selected_date_str}"
+        else:
+            view_date_label = "All Dates Aggregated"
+    else:
+        view_date_label = "All Dates"
+
+    st.sidebar.caption(f"Currently Showing Data For: **{view_date_label}**")
+
+    if st.sidebar.button("🔄 Refresh Live Data"):
+        st.cache_data.clear()
+        st.rerun()
+
+    if st.sidebar.button("Logout"):
+        st.session_state.auth_role = None
+        st.session_state.auth_section = None
+        st.cache_data.clear()
+        st.rerun()
+
+    # --- DASHBOARD HEADER ---
     st.title(f"Classroom Wellbeing Overview: {active_section_filter}")
     st.caption(
-        f"Logged in as: **{role}** | Real-time wellbeing tracking, proactive"
-        " cyberbullying early-warning, and anti-prank filtered metrics."
+        f"Logged in as: **{role}** | Filter Mode: **{view_date_label}** |"
+        " Real-time mood check-ins, proactive cyberbullying early-warning, and"
+        " student response logs."
     )
 
+    # --- TOP METRICS & ALERTS ---
     col_m1, col_m2, col_m3, col_m4, col_m5 = st.columns(5)
     total_pulse = len(df_pulse) if not df_pulse.empty else 0
     total_badges = len(df_badges) if not df_badges.empty else 0
+
     overwhelmed_count = (
-        len(df_pulse[df_pulse["Mood"].str.contains("Overwhelmed", na=False)])
+        len(
+            df_pulse[
+                df_pulse["Mood"].str.contains(
+                    "Overwhelmed|Sad|Anxious|Stressed", na=False, case=False
+                )
+            ]
+        )
         if not df_pulse.empty
         else 0
     )
@@ -660,12 +710,12 @@ else:
         else 0
     )
 
-    col_m1.metric("💬 Pulse Check-Ins", total_pulse)
+    col_m1.metric("💬 Daily Check-Ins", total_pulse)
     col_m2.metric("🏅 Badges Awarded", total_badges)
-    col_m3.metric("🌧️ Overwhelmed Moods", overwhelmed_count)
+    col_m3.metric("🌧️ High-Stress Moods", overwhelmed_count)
     col_m4.metric("🕊️ Counselor Requests", counselor_req_count)
     col_m5.metric(
-        "🛡️ Cyberbullying / Exclusion Flags",
+        "🛡️ Cyberbullying / Safety Flags",
         f"{cyberbullying_flags + bystander_flags}",
         delta=f"{cyberbullying_flags} GC / {bystander_flags} Bystander",
         delta_color="inverse",
@@ -673,9 +723,45 @@ else:
 
     st.markdown("---")
 
+    # --- DYNAMIC STUDENT MOOD & SAFETY ALERT BANNER ---
+    if not df_pulse.empty:
+        critical_submissions = df_pulse[
+            (
+                df_pulse["Mood"].str.contains(
+                    "Overwhelmed|Sad|Anxious|Stressed", na=False, case=False
+                )
+            )
+            | (df_pulse["Clean_Counselor_Request"].str.strip() != "")
+            | (
+                df_pulse["GC_Vibe"].str.contains(
+                    "Targeted teasing|Cyberbullying", na=False, case=False
+                )
+            )
+            | (
+                df_pulse["Bystander_Check"].str.contains(
+                    "teased|excluded|unsafe", na=False, case=False
+                )
+            )
+        ]
+
+        if not critical_submissions.empty:
+            percentage_distressed = (
+                len(critical_submissions) / len(df_pulse)
+            ) * 100
+            st.markdown(
+                f"""
+                <div class="alert-high">
+                    <b>🚨 ACTIVE STUDENT MOOD & SAFETY ALERT ({view_date_label}):</b><br>
+                    <b>{len(critical_submissions)} out of {len(df_pulse)} student responses ({percentage_distressed:.1f}%)</b> reported emotional distress, negative mood check-ins, direct counselor help requests, or active classroom/online bullying signals.
+                </div>
+            """,
+                unsafe_allow_html=True,
+            )
+
+    # --- DYNAMIC TABS SETUP ---
     tab_titles = [
-        "🛡️ Anti-Bullying & Mood Analytics",
-        "💬 Pulse Check-Ins Log",
+        "📊 Student Mood Check-In Analytics",
+        "💬 Daily Responses Log",
         "🏅 Kindness Badges Log",
         "🫂 Peer Inclusion & Sociogram",
         "📐 IFR Tracker",
@@ -686,69 +772,177 @@ else:
 
     tabs = st.tabs(tab_titles)
 
+    # =========================================================================
+    # TAB 1: STUDENT MOOD CHECK-IN ANALYTICS, INTERPRETATION & ALERTS
+    # =========================================================================
     with tabs[0]:
         st.subheader(
-            f"🛡️ Proactive Anti-Bullying Radar & Mood Climate ({active_section_filter})"
+            f"📊 Student Mood Check-In & Wellbeing Analysis ({view_date_label})"
         )
-        if not df_pulse.empty:
-            col_chart1, col_chart2 = st.columns(2)
+
+        if not df_pulse.empty and "Mood" in df_pulse.columns:
+            col_chart1, col_chart2 = st.columns([3, 2])
+
             with col_chart1:
+                st.markdown("##### 🎭 Student Mood Breakdown")
+                mood_counts = (
+                    df_pulse["Mood"]
+                    .value_counts()
+                    .reset_index()
+                )
+                mood_counts.columns = ["Mood State", "Student Count"]
+
+                # Custom color mapping for emotional states
+                color_map = {
+                    "🌱 Happy & Energized": "#10B981",
+                    "🟢 Peaceful & Respectful": "#3B82F6",
+                    "🙂 Calm / Ready to Learn": "#0EA5E9",
+                    "😴 Tired / Low Energy": "#F59E0B",
+                    "🌧️ Anxious / Stressed": "#F97316",
+                    "🚨 Overwhelmed / Need Help": "#EF4444",
+                }
+
+                fig_mood = px.bar(
+                    mood_counts,
+                    x="Mood State",
+                    y="Student Count",
+                    color="Mood State",
+                    text="Student Count",
+                    title=f"Mood Check-In Distribution — {view_date_label}",
+                    color_discrete_map=color_map,
+                )
+                fig_mood.update_traces(
+                    textposition="outside", marker_line_color="rgb(8,48,107)"
+                )
+                fig_mood.update_layout(
+                    showlegend=False,
+                    xaxis_title="Reported Mood State",
+                    yaxis_title="Number of Students",
+                    margin=dict(t=40, b=20),
+                )
+                st.plotly_chart(fig_mood, use_container_width=True)
+
+            with col_chart2:
+                st.markdown("##### 🌐 Online Atmosphere (GC Check)")
                 vibe_counts = df_pulse["GC_Vibe"].value_counts().reset_index()
                 vibe_counts.columns = ["Atmosphere Vibe", "Count"]
+
                 fig_vibe = px.pie(
                     vibe_counts,
                     names="Atmosphere Vibe",
                     values="Count",
                     hole=0.4,
-                    color_discrete_sequence=px.colors.qualitative.Bold,
-                    title="Online Vibe Check",
+                    color_discrete_sequence=px.colors.qualitative.Set2,
+                    title="Class Group Chat Vibe",
                 )
                 st.plotly_chart(fig_vibe, use_container_width=True)
 
-            with col_chart2:
-                bystander_counts = (
-                    df_pulse["Bystander_Check"].value_counts().reset_index()
-                )
-                bystander_counts.columns = ["Observation", "Count"]
-                fig_bystander = px.bar(
-                    bystander_counts,
-                    x="Count",
-                    y="Observation",
-                    orientation="h",
-                    color="Observation",
-                    title="Bystander Bullying Signals",
-                    color_discrete_sequence=px.colors.qualitative.Set2,
-                )
-                fig_bystander.update_layout(
-                    showlegend=False, yaxis={"autorange": "reversed"}
-                )
-                st.plotly_chart(fig_bystander, use_container_width=True)
-        else:
-            st.info("No check-in data available yet.")
+            st.markdown("---")
 
+            # --- DETAILED MOOD INTERPRETATION & TEACHER GUIDANCE BOX ---
+            st.markdown("#### 💡 Mood Check-In Interpretation & Daily Action Plan")
+
+            # Calculate proportions for interpretation
+            high_stress_pct = (overwhelmed_count / total_pulse) * 100 if total_pulse > 0 else 0
+
+            st.markdown(
+                f"""
+            <div class="guidance-box">
+                <b>What Today's Mood Data Means:</b><br>
+                * <b>Emotional Readiness Level:</b> <b>{total_pulse - overwhelmed_count}</b> out of <b>{total_pulse}</b> students are in a positive or neutral state, while <b>{overwhelmed_count} student(s) ({high_stress_pct:.1f}%)</b> indicate high stress, anxiety, or emotional fatigue.<br>
+                * <b>Classroom Climate Impact:</b> High-stress mood reports often correlate with reduced academic focus, lower participation, or heightened peer conflict during collaborative work.<br><br>
+                <b>Recommended Daily Teacher Action Items:</b><br>
+                1. <b>Incorporate a 3-Minute Reset:</b> If high-stress moods exceed 20%, start class with a brief mindfulness, breathing, or quiet reflection exercise.<br>
+                2. <b>Discreet Wellbeing Check:</b> Approach students who checked in as <i>Overwhelmed</i> quietly at their desks or after class without calling public attention.<br>
+                3. <b>Structure Peer Activities:</b> Use the <i>Peer Inclusion & Sociogram</i> tab to ensure anxious or low-energy students are paired with supportive Peer Anchors.
+            </div>
+            """,
+                unsafe_allow_html=True,
+            )
+
+        else:
+            st.info(
+                f"No mood check-in records found for the selected view scope: **{view_date_label}**."
+            )
+
+    # =========================================================================
+    # TAB 2: DAILY RESPONSES LOG (PER-DAY STUDENT RESPONSE TABLE)
+    # =========================================================================
     with tabs[1]:
         st.subheader(
-            f"💬 Confidential Student Pulse Check-Ins ({active_section_filter})"
+            f"💬 Student Response Log per Day ({active_section_filter} | {view_date_label})"
         )
-        if not df_pulse.empty:
-            st.dataframe(df_pulse, use_container_width=True)
+        st.caption(
+            "Filter responses per day using the sidebar widget to examine"
+            " individual student reflections."
+        )
 
+        if not df_pulse.empty:
+            display_cols = [
+                "Timestamp",
+                "Class/Section",
+                "Student LRN",
+                "Mood",
+                "Kind Peer",
+                "Preferred Groupmate",
+                "GC_Vibe",
+                "Bystander_Check",
+                "Clean_Counselor_Request",
+                "Source_Tag",
+            ]
+            avail_cols = [c for c in display_cols if c in df_pulse.columns]
+
+            st.dataframe(
+                df_pulse[avail_cols].sort_values("Timestamp", ascending=False),
+                use_container_width=True,
+            )
+
+            st.markdown(
+                f"""
+            <div class="guidance-box">
+                <b>Log Analysis Guidelines ({view_date_label}):</b><br>
+                * <b>Counselor Requests:</b> Check the <i>Clean_Counselor_Request</i> column for confidential help messages submitted by students.<br>
+                * <b>Peer Nominations:</b> Use <i>Kind Peer</i> and <i>Preferred Groupmate</i> entries to gauge organic social connections formed in class.
+            </div>
+            """,
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info(
+                f"No student check-in responses recorded for **{view_date_label}**."
+            )
+
+    # =========================================================================
+    # TAB 3: KINDNESS BADGES LOG
+    # =========================================================================
     with tabs[2]:
         st.subheader(f"🏅 Kindness Badges Log ({active_section_filter})")
         if not df_badges.empty:
             st.dataframe(df_badges, use_container_width=True)
+        else:
+            st.info("No kindness badges awarded yet.")
 
+    # =========================================================================
+    # TAB 4: PEER INCLUSION & SOCIOGRAM
+    # =========================================================================
     with tabs[3]:
         render_sociogram_analytics(
             df_pulse, df_badges, section_label=active_section_filter
         )
 
+    # =========================================================================
+    # TAB 5: IFR TRACKER
+    # =========================================================================
     with tabs[4]:
         render_ifr_tracker()
 
+    # =========================================================================
+    # COUNSELOR RESTRICTED TABS
+    # =========================================================================
     if role == "Counselor":
         with tabs[5]:
             render_student_lookup_tool()
+
         with tabs[6]:
             st.subheader("⚙️ PIN & Section Configuration Manager")
             st.dataframe(pin_df, use_container_width=True)
