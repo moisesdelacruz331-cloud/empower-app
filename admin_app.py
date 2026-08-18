@@ -81,7 +81,7 @@ def connect_to_gsheet():
 
 @st.cache_data(ttl=600)
 def load_pin_config():
-    """Fast raw-value fetcher for PIN configuration."""
+    """Fast raw-value fetcher for PIN configuration & Student Rosters."""
     try:
         sh = connect_to_gsheet()
         ws = sh.worksheet("Class Configuration")
@@ -484,35 +484,79 @@ def render_ifr_tracker():
         )
 
 
-# --- COUNSELOR DE-ANONYMIZATION MODULE ---
-def render_student_lookup_tool():
-    st.subheader("🔍 Confidential Student De-Anonymization Tool")
+# --- AUTOMATED COUNSELOR DE-ANONYMIZATION MODULE ---
+def render_student_lookup_tool(df_roster: pd.DataFrame, df_pulse: pd.DataFrame):
+    st.subheader("🔍 Automated Confidential Student De-Anonymization")
     st.caption("Authorized Counselor Feature — RA 10173 Compliant")
 
-    col1, col2 = st.columns(2)
+    if df_roster.empty and df_pulse.empty:
+        st.warning("⚠️ No student records loaded to match tokens against.")
+        return
+
+    col1, col2 = st.columns([2, 1])
+
     with col1:
-        target_token = (
-            st.text_input(
-                "Enter Flagged Anonymous Token (e.g., STU-8A2F):",
-                placeholder="STU-8A2F",
-            )
-            .strip()
-            .upper()
-        )
+        target_token = st.text_input(
+            "Enter Flagged Anonymous Token (e.g., STU-BA63):",
+            placeholder="STU-BA63"
+        ).strip().upper()
+
     with col2:
-        input_lrn = st.text_input(
-            "Verify Known Student LRN:", placeholder="e.g., 123456789012"
+        counselor_pass_input = st.text_input(
+            "Enter Counselor Master Key to Reveal:",
+            type="password"
         ).strip()
 
-    if input_lrn:
-        generated_token = generate_anonymous_id(input_lrn)
-        if target_token and generated_token == target_token:
-            st.success(
-                f"✅ **MATCH CONFIRMED:** LRN `{input_lrn}` maps to"
-                f" **{generated_token}**."
-            )
-        else:
-            st.info(f"LRN `{input_lrn}` generates token: **{generated_token}**")
+    counselor_master_key = str(st.secrets.get("ADMIN_PASSWORD", "COUNSELOR2026")).strip()
+
+    if target_token:
+        if st.button("🔓 Instantly Match Token"):
+            # Security Authorization Check
+            if counselor_pass_input != counselor_master_key:
+                st.error("❌ Invalid Counselor Master Key. Access denied.")
+                return
+
+            # Gather all candidate LRNs from configuration roster & pulse checkins
+            candidate_records = []
+
+            # 1. Inspect Roster Sheet
+            if not df_roster.empty:
+                for _, row in df_roster.iterrows():
+                    for col in df_roster.columns:
+                        if any(k in col.upper() for k in ["LRN", "PIN", "STUDENT"]):
+                            val = str(row.get(col, "")).strip()
+                            if val and val.lower() != "nan":
+                                candidate_records.append({
+                                    "lrn": val,
+                                    "section": row.get("Class/Section", "N/A")
+                                })
+
+            # 2. Inspect Pulse Records
+            if not df_pulse.empty and "Student LRN" in df_pulse.columns:
+                for _, row in df_pulse.iterrows():
+                    val = str(row.get("Student LRN", "")).strip()
+                    if val and val.lower() != "nan":
+                        candidate_records.append({
+                            "lrn": val,
+                            "section": row.get("Class/Section", "N/A")
+                        })
+
+            # Fast Batch-Hash Search Across Candidates
+            matched_entry = None
+            for entry in candidate_records:
+                if generate_anonymous_id(entry["lrn"]) == target_token:
+                    matched_entry = entry
+                    break
+
+            if matched_entry:
+                st.success(f"✅ **IDENTITY MATCH FOUND FOR TOKEN `{target_token}`**")
+                res_col1, res_col2 = st.columns(2)
+                with res_col1:
+                    st.markdown(f"**Student LRN / ID:** `{matched_entry['lrn']}`")
+                with res_col2:
+                    st.markdown(f"**Class / Section:** `{matched_entry['section']}`")
+            else:
+                st.error(f"❌ No matching student LRN found in database for token `{target_token}`.")
 
 
 # --- AUTHENTICATION & PRE-WARM CACHE ---
@@ -734,10 +778,8 @@ else:
 
     # --- DYNAMIC STUDENT MOOD & SAFETY ALERT BANNER ---
     if not df_pulse.empty:
-        # High-risk keywords that explicitly indicate urgency or distress
         DISTRESS_KEYWORDS = r"kill|die|bomb|hurt|abuse|suicide|harm|help|scared|unsafe|depressed|threat|bully|afraid"
 
-        # Check if counselor request contains non-greeting content or distress keywords
         is_concerning_request = (
             df_pulse["Clean_Counselor_Request"].str.contains(DISTRESS_KEYWORDS, na=False, case=False)
         ) | (
@@ -793,7 +835,7 @@ else:
     tabs = st.tabs(tab_titles)
 
     # =========================================================================
-    # TAB 1: STUDENT MOOD CHECK-IN ANALYTICS, INTERPRETATION & ALERTS
+    # TAB 1: STUDENT MOOD CHECK-IN ANALYTICS
     # =========================================================================
     with tabs[0]:
         st.subheader(
@@ -812,7 +854,6 @@ else:
                 )
                 mood_counts.columns = ["Mood State", "Student Count"]
 
-                # Custom color mapping for emotional states
                 color_map = {
                     "🌱 Happy & Energized": "#10B981",
                     "🟢 Peaceful & Respectful": "#3B82F6",
@@ -859,10 +900,7 @@ else:
 
             st.markdown("---")
 
-            # --- DETAILED MOOD INTERPRETATION & TEACHER GUIDANCE BOX ---
             st.markdown("#### 💡 Mood Check-In Interpretation & Daily Action Plan")
-
-            # Calculate proportions for interpretation
             high_stress_pct = (overwhelmed_count / total_pulse) * 100 if total_pulse > 0 else 0
 
             st.markdown(
@@ -886,7 +924,7 @@ else:
             )
 
     # =========================================================================
-    # TAB 2: DAILY RESPONSES LOG (PER-DAY STUDENT RESPONSE TABLE)
+    # TAB 2: DAILY RESPONSES LOG
     # =========================================================================
     with tabs[1]:
         st.subheader(
@@ -936,18 +974,19 @@ else:
     # TAB 3: KINDNESS BADGES LOG
     # =========================================================================
     with tabs[2]:
-        st.subheader(f"🏅 Kindness Badges Log ({active_section_filter})")
+        st.subheader("🏅 Kindness Badges Awarded Log")
         if not df_badges.empty:
             st.dataframe(df_badges, use_container_width=True)
         else:
-            st.info("No kindness badges awarded yet.")
+            st.info("No kindness badge records found for this section/date filter.")
 
     # =========================================================================
     # TAB 4: PEER INCLUSION & SOCIOGRAM
     # =========================================================================
     with tabs[3]:
+        st.subheader("🫂 Peer Inclusion & Sociogram Network")
         render_sociogram_analytics(
-            df_pulse, df_badges, section_label=active_section_filter
+            df_pulse_clean, df_badges_raw, section_label=active_section_filter
         )
 
     # =========================================================================
@@ -961,7 +1000,7 @@ else:
     # =========================================================================
     if role == "Counselor":
         with tabs[5]:
-            render_student_lookup_tool()
+            render_student_lookup_tool(pin_df, df_pulse_clean)
         with tabs[6]:
             st.subheader("⚙️ PIN Manager")
             if not pin_df.empty:
