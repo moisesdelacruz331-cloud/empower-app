@@ -69,6 +69,59 @@ st.markdown(
 )
 
 
+# --- DATABASE CONNECTIONS & OPTIMIZED CACHING ---
+@st.cache_resource
+def connect_to_gsheet():
+    creds = dict(st.secrets["connections"]["gsheets"])
+    if "private_key" in creds:
+        creds["private_key"] = creds["private_key"].replace("\\n", "\n")
+    gc = gspread.service_account_from_dict(creds)
+    return gc.open_by_url(creds.get("spreadsheet"))
+
+
+@st.cache_data(ttl=300)
+def load_pin_config():
+    """Caches PIN mappings for 5 minutes to minimize API strain."""
+    try:
+        sh = connect_to_gsheet()
+        ws = sh.worksheet("Class Configuration")
+        return pd.DataFrame(ws.get_all_records())
+    except Exception:
+        return pd.DataFrame(
+            columns=["Class/Section", "Student PIN", "Teacher PIN"]
+        )
+
+
+@st.cache_data(ttl=60)
+def fetch_pulse_records():
+    """Caches raw Pulse Check-ins for 60 seconds."""
+    try:
+        sh = connect_to_gsheet()
+        ws_pulse = sh.worksheet("Pulse Checkins")
+        return parse_mood_and_requests(
+            pd.DataFrame(ws_pulse.get_all_records())
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=60)
+def fetch_badge_records():
+    """Caches raw Kindness Badges for 60 seconds."""
+    try:
+        sh = connect_to_gsheet()
+        ws_badges = sh.worksheet("Kindness Badges")
+        return pd.DataFrame(ws_badges.get_all_records())
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=120)
+def compute_graph_layout(_G):
+    """Caches NetworkX CPU-intensive spring layout for Plotly speedup."""
+    return nx.spring_layout(_G, k=0.6, seed=42)
+
+
 # --- ANTI-PRANK & ANOMALY FILTERING PIPELINE ---
 def clean_pulse_data(df_pulse: pd.DataFrame) -> pd.DataFrame:
     """Pre-cleaning pipeline: Deduplicates per student & strips self-nominations."""
@@ -255,8 +308,8 @@ def render_sociogram_analytics(
         ):
             eligible_anchors.append(node)
 
-    # Render Graph
-    pos = nx.spring_layout(G, k=0.6, seed=42)
+    # Render Graph (CACHED POSITIONS FOR PERFORMANCE)
+    pos = compute_graph_layout(G)
     edge_x, edge_y = [], []
     for edge in G.edges():
         x0, y0 = pos[edge[0]]
@@ -518,28 +571,6 @@ def render_student_lookup_tool():
     )
 
 
-# --- DATABASE CONNECTIONS ---
-@st.cache_resource
-def connect_to_gsheet():
-    creds = dict(st.secrets["connections"]["gsheets"])
-    if "private_key" in creds:
-        creds["private_key"] = creds["private_key"].replace("\\n", "\n")
-    gc = gspread.service_account_from_dict(creds)
-    return gc.open_by_url(creds.get("spreadsheet"))
-
-
-@st.cache_data(ttl=10)
-def load_pin_config():
-    try:
-        sh = connect_to_gsheet()
-        ws = sh.worksheet("Class Configuration")
-        return pd.DataFrame(ws.get_all_records())
-    except Exception:
-        return pd.DataFrame(
-            columns=["Class/Section", "Student PIN", "Teacher PIN"]
-        )
-
-
 # --- AUTHENTICATION ---
 if "auth_role" not in st.session_state:
     st.session_state.auth_role = None
@@ -594,22 +625,9 @@ else:
         unsafe_allow_html=True,
     )
 
-    sh = connect_to_gsheet()
-
-    try:
-        ws_pulse = sh.worksheet("Pulse Checkins")
-        df_pulse_raw = parse_mood_and_requests(
-            pd.DataFrame(ws_pulse.get_all_records())
-        )
-    except Exception:
-        df_pulse_raw = pd.DataFrame()
-
-    try:
-        ws_badges = sh.worksheet("Kindness Badges")
-        df_badges_raw = pd.DataFrame(ws_badges.get_all_records())
-    except Exception:
-        df_badges_raw = pd.DataFrame()
-
+    # FAST CACHED DATA LOAD
+    df_pulse_raw = fetch_pulse_records()
+    df_badges_raw = fetch_badge_records()
     df_pulse_clean = clean_pulse_data(df_pulse_raw)
     pin_df = load_pin_config()
 
@@ -642,6 +660,11 @@ else:
         active_section_filter = assigned_section
 
     st.sidebar.write(f"Active Scope: **{active_section_filter}**")
+
+    # MANUAL REFRESH BUTTON (PURGES STALE DATA CACHE)
+    if st.sidebar.button("🔄 Refresh Live Data"):
+        st.cache_data.clear()
+        st.rerun()
 
     if st.sidebar.button("Logout"):
         st.session_state.auth_role = None
@@ -901,156 +924,39 @@ else:
                 <b>What This Table Implies:</b><br>
                 * Comprehensive log of student reflections including peer appreciations, preferred partners, group chat vibes, and private notes.<br><br>
                 <b>Recommended Action Items:</b><br>
-                1. <b>Review Counselor Notes:</b> Pay attention to notes submitted via <code>💻 Classroom Kiosk</code> vs <code>📱 Mobile (QR Scan)</code>.<br>
-                2. <b>Sociogram Input:</b> Ensure peer nominations are reflected in the Peer Inclusion Sociogram tab.
+                1. <b>Review Counselor Notes:</b> Flagged entries should be coordinated with the guidance office.<br>
+                2. <b>Cross-reference Peer Choices:</b> Utilize preferred groupmates to structure balanced learning groups.
             </div>
             """,
                 unsafe_allow_html=True,
             )
         else:
-            st.info("No pulse check-in records available.")
+            st.info("No check-in submissions found.")
 
-    # --- TAB 3: KINDNESS BADGES TABLE ---
+    # --- TAB 3: KINDNESS BADGES LOG ---
     with tabs[2]:
-        st.subheader(f"🏅 Peer Kindness Badges Log ({active_section_filter})")
+        st.subheader(f"🏅 Kindness Badges Log ({active_section_filter})")
         if not df_badges.empty:
             st.dataframe(df_badges, use_container_width=True)
-
-            st.markdown(
-                """
-            <div class="guidance-box">
-                <b>What This Table Implies:</b><br>
-                * Tracks positive peer recognitions. Identifies active culture-builders and prosocial student leaders.<br><br>
-                <b>Recommended Action Items:</b><br>
-                1. <b>Recognize Peer Anchors:</b> Celebrate high badge recipients publicly to establish prosocial social norms.<br>
-                2. <b>Support Low-Badge Recipients:</b> Intentional seating placement for students receiving zero badges.
-            </div>
-            """,
-                unsafe_allow_html=True,
-            )
         else:
-            st.info("No kindness badges sent yet.")
+            st.info("No kindness badges awarded yet.")
 
-    # --- TAB 4: SOCIOGRAM ANALYTICS & PEER INCLUSION ---
+    # --- TAB 4: PEER INCLUSION & SOCIOGRAM ---
     with tabs[3]:
-        st.subheader("🫂 Peer Inclusion & Sociogram Analytics")
-        roster_input = st.text_area(
-            "Optional Section Roster LRNs (Comma-separated for absenteeism"
-            " masking):",
-            value="",
-        )
-        roster_list = (
-            [x.strip() for x in roster_input.split(",") if x.strip()]
-            if roster_input
-            else None
-        )
-
+        st.subheader(f"🫂 Peer Inclusion & Sociogram ({active_section_filter})")
         render_sociogram_analytics(
-            df_pulse,
-            df_badges,
-            section_roster=roster_list,
-            section_label=active_section_filter,
+            df_pulse, df_badges, section_label=active_section_filter
         )
 
-    # --- TAB 5: IFR TRACKER TOOL ---
+    # --- TAB 5: IFR TRACKER ---
     with tabs[4]:
         render_ifr_tracker()
 
-    # --- COUNSELOR-ONLY TABS ---
+    # --- TAB 6 & 7: COUNSELOR ONLY TOOLS ---
     if role == "Counselor":
-        # TAB 6: DE-ANONYMIZATION TOOL
         with tabs[5]:
             render_student_lookup_tool()
 
-        # TAB 7: PIN MANAGER (FULLY COMPLETED)
         with tabs[6]:
-            st.subheader("⚙️ Manage Class Sections & Access PINs")
-            st.caption(
-                "Counselor Administrator Tool for class onboardings, credential edits, and PIN rotations."
-            )
-
-            pin_df = load_pin_config()
-
-            # Action Mode Selector
-            action_mode = st.radio(
-                "Select Action Mode:",
-                ["➕ Add / Register New Class Section", "✏️ Edit / Update Existing Section"],
-                horizontal=True,
-            )
-
-            st.markdown("---")
-
-            # ACTION A: ADD NEW SECTION
-            if action_mode == "➕ Add / Register New Class Section":
-                with st.form("add_section_form", clear_on_submit=True):
-                    st.write("➕ **Add / Register New Class Section**")
-                    col_a, col_b, col_c = st.columns(3)
-                    nsec = col_a.text_input(
-                        "Section Name", placeholder="e.g., 10 - Emerald"
-                    )
-                    spin = col_b.text_input("Student PIN", placeholder="e.g., 1001")
-                    tpin = col_c.text_input(
-                        "Teacher PIN", placeholder="e.g., EMERALD2026"
-                    )
-
-                    if st.form_submit_button("Save New Section Configuration", type="primary"):
-                        if nsec.strip() and spin.strip() and tpin.strip():
-                            try:
-                                ws_c = sh.worksheet("Class Configuration")
-                                ws_c.append_row(
-                                    [nsec.strip(), spin.strip(), tpin.strip()]
-                                )
-                                st.cache_data.clear()
-                                st.success(f"Registered section '{nsec}' successfully!")
-                                st.rerun()
-                            except Exception as e:
-                                st.error(f"Error saving to Google Sheets: {e}")
-                        else:
-                            st.error("Please fill out all section fields.")
-
-            # ACTION B: EDIT / UPDATE EXISTING SECTION
-            elif action_mode == "✏️ Edit / Update Existing Section":
-                if not pin_df.empty and "Class/Section" in pin_df.columns:
-                    section_list = (
-                        pin_df["Class/Section"].dropna().astype(str).str.strip().tolist()
-                    )
-                    selected_sec = st.selectbox("Select Section to Edit:", section_list)
-
-                    sec_row = pin_df[
-                        pin_df["Class/Section"].astype(str).str.strip() == selected_sec
-                    ].iloc[0]
-
-                    with st.form("edit_section_form"):
-                        st.write(f"✏️ **Edit Credentials for Section: {selected_sec}**")
-                        col_e1, col_e2 = st.columns(2)
-                        edit_spin = col_e1.text_input(
-                            "Update Student PIN",
-                            value=str(sec_row.get("Student PIN", "")),
-                        )
-                        edit_tpin = col_e2.text_input(
-                            "Update Teacher PIN",
-                            value=str(sec_row.get("Teacher PIN", "")),
-                        )
-
-                        if st.form_submit_button("Update Section Credentials", type="primary"):
-                            try:
-                                ws_c = sh.worksheet("Class Configuration")
-                                cell = ws_c.find(selected_sec)
-                                if cell:
-                                    ws_c.update_cell(cell.row, 2, edit_spin.strip())
-                                    ws_c.update_cell(cell.row, 3, edit_tpin.strip())
-                                    st.cache_data.clear()
-                                    st.success(
-                                        f"Updated credentials for section '{selected_sec}'!"
-                                    )
-                                    st.rerun()
-                                else:
-                                    st.error("Section record not found in worksheet.")
-                            except Exception as e:
-                                st.error(f"Error updating Google Sheets: {e}")
-                else:
-                    st.info("No active class sections found in configuration sheet.")
-
-            st.markdown("---")
-            st.markdown("##### 📋 Current Class Configuration Registry")
+            st.subheader("⚙️ PIN & Section Configuration Manager")
             st.dataframe(pin_df, use_container_width=True)
